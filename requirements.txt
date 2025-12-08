@@ -1,0 +1,47 @@
+# Cryo-EM Diffusion Denoising - Requirements
+# 冷冻电镜扩散去噪模型依赖
+
+# ============================================
+# Core Dependencies / 核心依赖
+# ============================================
+
+# PyTorch - Deep Learning Framework / 深度学习框架
+# Install with CUDA support: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Numerical Computing / 数值计算
+numpy>=1.24.0,<2.0.0
+
+# MRC File I/O / MRC文件读写
+mrcfile>=1.4.0
+
+# Progress Bar / 进度条
+tqdm>=4.60.0
+
+# System Resource Monitoring / 系统资源监控
+psutil>=5.9.0
+
+# ============================================
+# Optional Dependencies / 可选依赖
+# ============================================
+
+# Scientific Computing / 科学计算 (recommended)
+scipy>=1.10.0
+
+# Image Processing / 图像处理 (for visualization)
+matplotlib>=3.7.0
+scikit-image>=0.21.0
+
+# Data Analysis / 数据分析
+pandas>=2.0.0
+
+# STAR File Handling / STAR文件处理
+starfile>=0.5.0
+
+# ============================================
+# Development Dependencies / 开发依赖
+# ============================================
+
+# GPU Acceleration / GPU加速 (optional, for CuPy)
+# cupy-cuda11x>=13.0.0

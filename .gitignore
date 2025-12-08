@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Logs
+*.log
+.log/
+*.out
+*.err
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Claude
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
