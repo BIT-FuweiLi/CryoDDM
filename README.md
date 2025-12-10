@@ -6,7 +6,7 @@
 
 ## 简介
 
-基于扩散模型的冷冻电镜(Cryo-EM)图像去噪工具。该项目使用U-Net网络实现三步去噪流程，能够有效提升冷冻电镜图像的信噪比。
+基于扩散模型的冷冻电镜(Cryo-EM)图像去噪工具。该项目使用U-Net网络实现去噪流程，能在去噪同时保护颗粒信息。
 
 ## 项目结构
 
@@ -181,7 +181,7 @@ python backward/unet/predict.py \
 
 ## Introduction
 
-A diffusion model-based denoising tool for Cryo-EM (Cryo-Electron Microscopy) images. This project implements a three-step denoising pipeline using U-Net architecture to effectively improve the signal-to-noise ratio of cryo-EM images.
+A diffusion model-based denoising tool for Cryo-EM (Cryo-Electron Microscopy) images. This project implements a denoising pipeline which can protect particle feature while denoising.
 
 ## Project Structure
 
