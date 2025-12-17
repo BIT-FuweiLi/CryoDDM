@@ -174,6 +174,21 @@ python backward/unet/predict.py \
 ![alt text](pipeline.png)
 
 ---
+## 说明
+目前该项目和论文仅为preview版本，完整功能请等待正式版
+
+## 引用
+@article {Li2025.12.10.693455,
+	author = {Li, Fuwei and Chen, Yuanbo and Dong, Hao and Ji, Chenxuan and Wang, Xinsheng and Zhang, Chuanyang and Wang, Zupeng and Hu, Bin and Zhang, Fa and Wan, Xiaohua},
+	title = {CryoDDM: CryoEM denoising diffusion model for heterogeneous conformational reconstruction},
+	elocation-id = {2025.12.10.693455},
+	year = {2025},
+	doi = {10.64898/2025.12.10.693455},
+	publisher = {Cold Spring Harbor Laboratory},
+	URL = {https://www.biorxiv.org/content/early/2025/12/12/2025.12.10.693455},
+	eprint = {https://www.biorxiv.org/content/early/2025/12/12/2025.12.10.693455.full.pdf},
+	journal = {bioRxiv}
+}
 
 <a name="english"></a>
 
@@ -348,6 +363,21 @@ python backward/unet/predict.py \
 
 ## Get high resolution heterogeneous structure
 ![alt text](pipeline.png)
+
+## Notice
+This project and paper are currently only in preview version; full functionality will be available in the online release.
+
+## Reference
+@article {Li2025.12.10.693455,
+	author = {Li, Fuwei and Chen, Yuanbo and Dong, Hao and Ji, Chenxuan and Wang, Xinsheng and Zhang, Chuanyang and Wang, Zupeng and Hu, Bin and Zhang, Fa and Wan, Xiaohua},
+	title = {CryoDDM: CryoEM denoising diffusion model for heterogeneous conformational reconstruction},
+	elocation-id = {2025.12.10.693455},
+	year = {2025},
+	doi = {10.64898/2025.12.10.693455},
+	publisher = {Cold Spring Harbor Laboratory},
+	eprint = {https://www.biorxiv.org/content/early/2025/12/12/2025.12.10.693455.full.pdf},
+	journal = {bioRxiv}
+}
 
 ## License
 
