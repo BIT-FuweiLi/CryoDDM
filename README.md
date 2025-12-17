@@ -178,6 +178,7 @@ python backward/unet/predict.py \
 目前该项目和论文仅为preview版本，完整功能请等待正式版
 
 ## 引用
+```bash
 @article {Li2025.12.10.693455,
 	author = {Li, Fuwei and Chen, Yuanbo and Dong, Hao and Ji, Chenxuan and Wang, Xinsheng and Zhang, Chuanyang and Wang, Zupeng and Hu, Bin and Zhang, Fa and Wan, Xiaohua},
 	title = {CryoDDM: CryoEM denoising diffusion model for heterogeneous conformational reconstruction},
@@ -189,7 +190,7 @@ python backward/unet/predict.py \
 	eprint = {https://www.biorxiv.org/content/early/2025/12/12/2025.12.10.693455.full.pdf},
 	journal = {bioRxiv}
 }
-
+```
 <a name="english"></a>
 
 # English
@@ -368,6 +369,7 @@ python backward/unet/predict.py \
 This project and paper are currently only in preview version; full functionality will be available in the online release.
 
 ## Reference
+```bash
 @article {Li2025.12.10.693455,
 	author = {Li, Fuwei and Chen, Yuanbo and Dong, Hao and Ji, Chenxuan and Wang, Xinsheng and Zhang, Chuanyang and Wang, Zupeng and Hu, Bin and Zhang, Fa and Wan, Xiaohua},
 	title = {CryoDDM: CryoEM denoising diffusion model for heterogeneous conformational reconstruction},
@@ -378,7 +380,7 @@ This project and paper are currently only in preview version; full functionality
 	eprint = {https://www.biorxiv.org/content/early/2025/12/12/2025.12.10.693455.full.pdf},
 	journal = {bioRxiv}
 }
-
+```
 ## License
 
 This project is for research purposes only.
