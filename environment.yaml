@@ -1,11 +1,12 @@
 name: cryoddm
 channels:
   - defaults
+  - conda-forge 
 dependencies:
   - python=3.10
   - pip
+  - git 
   - pip:
-    # 指定 PyTorch 的下载源为 CUDA 12.1 版本 (兼容 Linux 和 Windows)
     - --index-url https://download.pytorch.org/whl/cu121
     - torch==2.4.0
     - torchvision==0.19.0
@@ -18,3 +19,5 @@ dependencies:
     - PySide6==6.4.2
     - tqdm==4.66.4
     - psutil==6.1.0
+    # 瀹夎 Pyem 
+    - git+https://github.com/asarnow/pyem.git@master
