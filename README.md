@@ -39,7 +39,7 @@
 
 1.  **克隆项目代码：**
     ```bash
-    git clone -b online_preview https://github.com/BIT-FuweiLi/CryoDDM.git
+    git clone https://github.com/BIT-FuweiLi/CryoDDM.git
     cd CryoDDM
     ```
 
