@@ -1,0 +1,20 @@
+name: cryoddm
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+    # 指定 PyTorch 的下载源为 CUDA 12.1 版本 (兼容 Linux 和 Windows)
+    - --index-url https://download.pytorch.org/whl/cu121
+    - torch==2.4.0
+    - torchvision==0.19.0
+    - numpy==1.24.3
+    - pandas==2.2.2
+    - scipy==1.13.1
+    - scikit-image==0.24.0
+    - matplotlib==3.9.1
+    - mrcfile==1.5.3
+    - PySide6==6.4.2
+    - tqdm==4.66.4
+    - psutil==6.1.0
