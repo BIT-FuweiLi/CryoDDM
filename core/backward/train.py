@@ -131,7 +131,7 @@ def main(preprocess_path, model_save_path, gpus, batch_size, log_path):
         scheduler.step() 
 
         # 训练 S2
-        for batch_idx, (inputs, targets) in enumerate(s2_train_dataloader):
+        for batch_idx, (targets, inputs) in enumerate(s2_train_dataloader):
             if torch.cuda.is_available():
                 inputs = inputs.unsqueeze(1).cuda()
                 targets = targets.unsqueeze(1).cuda()
