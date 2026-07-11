@@ -35,62 +35,50 @@
 
 ## 📥 安装指南
 
-推荐直接通过 pip 安装已发布版本。训练和推理仍需要本机具备可用的 NVIDIA/CUDA 环境。
+当前推荐从 GitHub 的 `v2` 分支直接安装。训练和推理仍需要本机具备可用的 NVIDIA/CUDA 环境。
 
-1.  **安装软件：**
+1.  **创建环境：**
     ```bash
-    pip install cryoddm
+    conda create -n cryoddm python=3.10 -y
+    conda activate cryoddm
+    python -m pip install -U pip setuptools wheel
     ```
 
-2.  **启动软件：**
+2.  **从 GitHub v2 分支安装：**
+    ```bash
+    pip install "git+https://github.com/BIT-FuweiLi/CryoDDM.git@v2"
+    ```
+
+3.  **启动软件：**
     ```bash
     cryoddm
     ```
 
-如果你需要从源码安装当前 GitHub 版本：
+以后每次使用只需要：
 
 ```bash
-git clone https://github.com/BIT-FuweiLi/CryoDDM.git
-cd CryoDDM
-pip install .
-cryoddm
-```
-
-如果 pip 环境中的 PyTorch/CUDA 解析不符合你的服务器配置，请使用 Conda 环境文件：
-
-```bash
-conda env create -f environment.yaml
 conda activate cryoddm
-pip install --no-deps .
 cryoddm
 ```
 
-如果之前创建失败，请先删除残留环境后重新创建：
+如果需要更新到 `v2` 分支最新代码：
 
 ```bash
-conda env remove -n cryoddm
-conda env create -f environment.yaml
-```
-
-发布维护者上传 PyPI 包时使用：
-
-```bash
-python -m pip install build twine
-python -m build
-python -m twine upload dist/*
-```
-
-上传成功后，用户即可使用：
-
-```bash
-pip install cryoddm
+conda activate cryoddm
+pip install --upgrade --force-reinstall --no-cache-dir "git+https://github.com/BIT-FuweiLi/CryoDDM.git@v2"
 cryoddm
+```
+
+如果当前环境找不到 Git：
+
+```bash
+conda install git -y
 ```
 
 `cs2star` 页面依赖 `csparc2star.py` 命令；如果该命令不存在，请额外安装 pyem：
 
 ```bash
-pip install git+https://github.com/asarnow/pyem.git@master
+pip install "git+https://github.com/asarnow/pyem.git@master"
 ```
 
 ## 🚀 使用流程
@@ -182,62 +170,50 @@ Unlike conventional denoising methods, CryoDDM introduces **Residual Structural 
 
 ## 📥 Installation
 
-The recommended path is installing the published package with pip. Training and inference still require a working NVIDIA/CUDA setup on the target machine.
+The recommended path is installing directly from the `v2` branch on GitHub. Training and inference still require a working NVIDIA/CUDA setup on the target machine.
 
-1.  **Install the software:**
+1.  **Create the environment:**
     ```bash
-    pip install cryoddm
+    conda create -n cryoddm python=3.10 -y
+    conda activate cryoddm
+    python -m pip install -U pip setuptools wheel
     ```
 
-2.  **Run the software:**
+2.  **Install from the GitHub v2 branch:**
+    ```bash
+    pip install "git+https://github.com/BIT-FuweiLi/CryoDDM.git@v2"
+    ```
+
+3.  **Run the software:**
     ```bash
     cryoddm
     ```
 
-To install the current GitHub source checkout:
+For future launches:
 
 ```bash
-git clone https://github.com/BIT-FuweiLi/CryoDDM.git
-cd CryoDDM
-pip install .
-cryoddm
-```
-
-If pip resolves a PyTorch/CUDA build that does not match your server, use the Conda environment file:
-
-```bash
-conda env create -f environment.yaml
 conda activate cryoddm
-pip install --no-deps .
 cryoddm
 ```
 
-If a previous environment creation failed, remove the partial environment first:
+To update to the latest code on the `v2` branch:
 
 ```bash
-conda env remove -n cryoddm
-conda env create -f environment.yaml
-```
-
-Maintainers can publish the PyPI package with:
-
-```bash
-python -m pip install build twine
-python -m build
-python -m twine upload dist/*
-```
-
-After the upload succeeds, users can run:
-
-```bash
-pip install cryoddm
+conda activate cryoddm
+pip install --upgrade --force-reinstall --no-cache-dir "git+https://github.com/BIT-FuweiLi/CryoDDM.git@v2"
 cryoddm
+```
+
+If Git is not available in the environment:
+
+```bash
+conda install git -y
 ```
 
 The `cs2star` tab depends on the `csparc2star.py` command. If it is missing, install pyem separately:
 
 ```bash
-pip install git+https://github.com/asarnow/pyem.git@master
+pip install "git+https://github.com/asarnow/pyem.git@master"
 ```
 
 ## 🚀 Usage Workflow 
