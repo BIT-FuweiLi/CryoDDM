@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cryoddm"
+version = "0.1.0"
+description = "CryoDDM GUI for cryo-EM denoising diffusion workflows"
+readme = "README.md"
+requires-python = ">=3.10,<3.11"
+license = { file = "LICENSE" }
+authors = [
+  { name = "CryoDDM contributors" }
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: X11 Applications :: Qt",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3.10",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+dependencies = [
+  "torch==2.4.0",
+  "torchvision==0.19.0",
+  "numpy==1.24.3",
+  "pandas==2.2.2",
+  "scipy==1.13.1",
+  "scikit-image==0.24.0",
+  "matplotlib==3.9.1",
+  "mrcfile==1.5.3",
+  "PySide6==6.4.2",
+  "tqdm==4.66.4",
+  "psutil==6.1.0",
+  "starfile>=0.5.8",
+]
+
+[project.urls]
+Homepage = "https://github.com/BIT-FuweiLi/CryoDDM"
+Repository = "https://github.com/BIT-FuweiLi/CryoDDM"
+
+[project.scripts]
+cryoddm = "cryoddm.cli:main"
+
+[tool.setuptools]
+py-modules = ["main"]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["cryoddm*", "modules*", "widgets*", "core*"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"core.cryo2star" = ["*.sh"]
