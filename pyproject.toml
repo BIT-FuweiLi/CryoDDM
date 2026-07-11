@@ -35,6 +35,7 @@ dependencies = [
   "tqdm==4.66.4",
   "psutil==6.1.0",
   "starfile>=0.5.8",
+  "pyem @ git+https://github.com/asarnow/pyem.git@master",
 ]
 
 [project.urls]

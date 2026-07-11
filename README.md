@@ -75,10 +75,10 @@ cryoddm
 conda install git -y
 ```
 
-`cs2star` 页面依赖 `csparc2star.py` 命令；如果该命令不存在，请额外安装 pyem：
+`cs2star` 页面依赖 `csparc2star.py` 命令。`pyem` 会随 CryoDDM 自动安装，可以用下面的命令检查：
 
 ```bash
-pip install "git+https://github.com/asarnow/pyem.git@master"
+csparc2star.py --help
 ```
 
 ## 🚀 使用流程
@@ -210,10 +210,10 @@ If Git is not available in the environment:
 conda install git -y
 ```
 
-The `cs2star` tab depends on the `csparc2star.py` command. If it is missing, install pyem separately:
+The `cs2star` tab depends on the `csparc2star.py` command. `pyem` is installed automatically with CryoDDM. Check it with:
 
 ```bash
-pip install "git+https://github.com/asarnow/pyem.git@master"
+csparc2star.py --help
 ```
 
 ## 🚀 Usage Workflow 
