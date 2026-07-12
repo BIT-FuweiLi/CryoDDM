@@ -1285,6 +1285,13 @@ class MainWindow(QMainWindow):
             else:
                 base_path = self.ui.lineEdit_10.text()
                 model_path = os.path.join(base_path, "best_model.pth")
+                if not os.path.isfile(model_path):
+                    QMessageBox.warning(
+                        self,
+                        "模型缺失",
+                        "未找到稳定的 best_model.pth。请勾选自定义模型并选择一个具体 epoch 的 .pth 文件。",
+                    )
+                    return
             out_path = self.ui.lineEdit_14.text()
             log_path = self.ui.lineEdit_log_2.text()
             input_fields = {

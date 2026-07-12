@@ -2,6 +2,7 @@
 # Example: bash pipelineV2.sh /path/to/cryosparc/J102 /path/to/output 7424 5
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_BIN="${PYTHON:-python}"
+SUCCESS_COUNT=0
 
 # 检查输入参数
 if [ "$#" -lt 3 ]; then
@@ -16,6 +17,11 @@ INPUT_DIR2=$2
 ADD_VALUE=$3
 NUM_PROJECTS=${4:-1}
 
+if ! [[ "$NUM_PROJECTS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "num_projects must be a positive integer, got: $NUM_PROJECTS" >&2
+    exit 1
+fi
+
 # 获取输入文件夹的名称
 BASE_DIR=$(basename "$INPUT_DIR1")
 
@@ -23,7 +29,17 @@ BASE_DIR=$(basename "$INPUT_DIR1")
 PARENT_DIR=$(dirname "$INPUT_DIR1")
 
 # 提取文件夹名称中的数字部分
-BASE_NUM=$(echo "$BASE_DIR" | grep -oP '(?<=J)\d+')
+if [[ "$BASE_DIR" =~ ^J([0-9]+)$ ]]; then
+    BASE_NUM="${BASH_REMATCH[1]}"
+else
+    echo "Input directory name must match J<number>: $BASE_DIR" >&2
+    exit 1
+fi
+
+if ! command -v csparc2star.py >/dev/null 2>&1; then
+    echo "csparc2star.py was not found on PATH" >&2
+    exit 1
+fi
 
 # 创建子文件夹
 for i in $(seq 0 $((NUM_PROJECTS - 1))); do
@@ -55,7 +71,12 @@ for i in $(seq 0 $((NUM_PROJECTS - 1))); do
 
     for FILE in "$DIR"/*_particles.cs; do
         if [ -f "$FILE" ]; then  # 确保是文件
-            NUM=$(echo "$FILE" | grep -oP '(?<=_)\d{3}(?=_particles.cs)')
+            FILE_NAME=$(basename "$FILE")
+            if [[ "$FILE_NAME" =~ _([0-9]{3})_particles\.cs$ ]]; then
+                NUM="${BASH_REMATCH[1]}"
+            else
+                NUM=""
+            fi
             if [ -n "$NUM" ] && [ "$NUM" -gt "$MAX_PARTICLES_NUM" ]; then
                 MAX_PARTICLES_NUM=$NUM
                 MAX_PARTICLES_FILE="$FILE"
@@ -78,29 +99,28 @@ for i in $(seq 0 $((NUM_PROJECTS - 1))); do
 
     CLASS_DIR="$INPUT_DIR2/class$i"
 
-    # 保存当前目录
-    ORIGINAL_DIR=$(pwd)
-
-    # 进入 class 文件夹
-    cd "$CLASS_DIR" || { echo "Failed to change directory to $CLASS_DIR"; continue; }
-    echo "Current directory: $(pwd)"
-
-    # 运行 csparc2star.py 脚本
-    echo "Running csparc2star.py with $INPUT1 and $INPUT2"
-    csparc2star.py "$INPUT1" "$INPUT2" particles_relion.star 2>/dev/null
-
-    # 运行 trans.py 脚本
-    echo "Running clean.py"
-    "$PYTHON_BIN" "$SCRIPT_DIR/clean.py"
-
-    # 删除 cleaned_particles_relion.star 文件的前 13 行
-    echo "Deleting first 13 lines of cleaned_particles_relion.star"
-    sed -i '1,13d' cleaned_particles_relion.star
-
-    # 运行 invert_coordinateY.py 修改 rlnCoordinateY 列 (替代 relion_star_handler)
-    echo "Running invert_coordinateY.py with add_to $ADD_VALUE"
-    "$PYTHON_BIN" "$SCRIPT_DIR/invert_coordinateY.py" cleaned_particles_relion.star invert.star "$ADD_VALUE"
-
-    # 返回原始目录
-    cd "$ORIGINAL_DIR" || { echo "Failed to return to $ORIGINAL_DIR"; exit 1; }
+    if (
+        cd "$CLASS_DIR" || exit 1
+        echo "Current directory: $(pwd)"
+        echo "Running csparc2star.py with $INPUT1 and $INPUT2"
+        csparc2star.py "$INPUT1" "$INPUT2" particles_relion.star || exit 1
+        echo "Running clean.py"
+        "$PYTHON_BIN" "$SCRIPT_DIR/clean.py" || exit 1
+        echo "Deleting first 13 lines of cleaned_particles_relion.star"
+        sed -i.bak '1,13d' cleaned_particles_relion.star || exit 1
+        rm -f cleaned_particles_relion.star.bak
+        echo "Running invert_coordinateY.py with add_to $ADD_VALUE"
+        "$PYTHON_BIN" "$SCRIPT_DIR/invert_coordinateY.py" cleaned_particles_relion.star invert.star "$ADD_VALUE" || exit 1
+    ); then
+        SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+    else
+        echo "Conversion failed for $DIR" >&2
+    fi
 done
+
+if [ "$SUCCESS_COUNT" -ne "$NUM_PROJECTS" ]; then
+    echo "Converted $SUCCESS_COUNT of $NUM_PROJECTS requested class(es); at least one conversion failed" >&2
+    exit 1
+fi
+
+echo "Successfully converted $SUCCESS_COUNT class(es)"

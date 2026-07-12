@@ -34,7 +34,16 @@ class BestModelTests(unittest.TestCase):
         self.assertIsNone(best_model_selection.select_best_epoch(losses))
         losses.extend({"epoch": epoch, "s2_loss": 0.5} for epoch in range(31, 33))
         losses[25]["s2_loss"] = 0.8
-        self.assertNotEqual(best_model_selection.select_best_epoch(losses)["epoch"], 25)
+        self.assertIsNone(best_model_selection.select_best_epoch(losses))
+
+    def test_equal_loss_prefers_earlier_epoch(self):
+        losses = [{"epoch": epoch, "s2_loss": 0.5} for epoch in range(1, 33)]
+        self.assertEqual(best_model_selection.select_best_epoch(losses)["epoch"], 21)
+
+    def test_nonfinite_loss_is_not_a_candidate(self):
+        losses = [{"epoch": epoch, "s2_loss": 0.5} for epoch in range(1, 33)]
+        losses[20]["s2_loss"] = float("nan")
+        self.assertEqual(best_model_selection.select_best_epoch(losses)["epoch"], 22)
 
     def test_materializes_selected_epoch_and_does_not_fake_best(self):
         stable = [{"epoch": epoch, "s2_loss": 0.5} for epoch in range(1, 32)]
@@ -100,17 +109,43 @@ class TrainingTests(unittest.TestCase):
             model_dir = root / "models"
             log_dir = root / "logs"
             model_dir.mkdir()
+            (model_dir / "best_model.pth").write_bytes(b"stale")
             self._make_dataset(data_dir)
             with mock.patch.object(train.unet2d, "UDenoiseNet", TinyModel), \
                     mock.patch.object(train, "StepLR", CountingScheduler), \
+                    mock.patch.object(train.torch, "save", side_effect=lambda _value, path: Path(path).write_bytes(b"model")), \
                     mock.patch.object(train.torch.cuda, "is_available", return_value=False):
                 train.main(data_dir, model_dir, "0", 1, log_dir, epochs=2, seed=42)
+            self.assertFalse((model_dir / "best_model.pth").exists())
         self.assertEqual(CountingScheduler.instances[-1].steps, 2)
 
     def test_train_cli_defaults_to_101_epochs(self):
         parser = train.build_parser()
         args = parser.parse_args(["-i", "input", "-o", "output"])
         self.assertEqual(args.epochs, 101)
+
+    def test_nonfinite_training_loss_fails_instead_of_succeeding(self):
+        class NaNModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.weight = torch.nn.Parameter(torch.tensor(1.0))
+
+            def forward(self, value):
+                return value * self.weight * float("nan")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            model_dir = root / "models"
+            log_dir = root / "logs"
+            model_dir.mkdir()
+            self._make_dataset(data_dir)
+            with mock.patch.object(train.unet2d, "UDenoiseNet", NaNModel), \
+                    mock.patch.object(train.torch, "save", side_effect=lambda _value, path: Path(path).write_bytes(b"unexpected")), \
+                    mock.patch.object(train.torch.cuda, "is_available", return_value=False):
+                with self.assertRaisesRegex(RuntimeError, "non-finite"):
+                    train.main(data_dir, model_dir, "0", 1, log_dir, epochs=1, seed=42)
+            self.assertFalse((model_dir / "1.pth").exists())
 
 
 if __name__ == "__main__":

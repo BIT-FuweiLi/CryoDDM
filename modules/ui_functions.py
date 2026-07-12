@@ -14,16 +14,19 @@
 #
 # ///////////////////////////////////////////////////////////////
 
-# MAIN FILE
-# ///////////////////////////////////////////////////////////////
-from main import *
+from PySide6.QtCore import QEasingCurve, QEvent, QParallelAnimationGroup, QPropertyAnimation, QTimer, Qt
+from PySide6.QtGui import QIcon
+from PySide6.QtWidgets import QPushButton, QSizeGrip
+
+from .app_settings import Settings
+from widgets import CustomGrip
 
 # GLOBALS
 # ///////////////////////////////////////////////////////////////
 GLOBAL_STATE = False
 GLOBAL_TITLE_BAR = True
 
-class UIFunctions(MainWindow):
+class UIFunctions:
     # MAXIMIZE/RESTORE
     # ///////////////////////////////////////////////////////////////
     def maximize_restore(self):

@@ -9,7 +9,6 @@ import random
 import argparse
 import time
 import sys
-import torchvision.transforms as transforms
 import copy
 
 # 自动添加当前目录到系统路径，以便导入同级模块 (unet2d, util_self)
@@ -18,8 +17,73 @@ sys.path.append(current_dir)
 
 import unet2d
 import util_self
+from best_model_selection import BEST_MODEL_RULE, materialize_best_model
 
-def main(preprocess_path, model_save_path, gpus, batch_size, log_path):
+REQUIRED_TRAINING_FILES = {
+    "s1": "s1/particles.mrcs",
+    "s2_input": "s2/input.mrcs",
+    "s2_label": "s2/label.mrcs",
+    "s3": "s3/noise.mrcs",
+    "val_input": "val/input.mrcs",
+    "val_label": "val/label.mrcs",
+}
+
+
+def _as_stack(array, label):
+    stack = np.asarray(array)
+    if stack.ndim == 2:
+        stack = stack[np.newaxis, :, :]
+    if stack.ndim != 3 or len(stack) == 0:
+        raise ValueError(f"Training data {label} must be a non-empty 3D stack, got shape {stack.shape}")
+    return stack
+
+
+def validate_training_data(preprocess_path):
+    root = os.fspath(preprocess_path)
+    loaded = {}
+    for label, relative_path in REQUIRED_TRAINING_FILES.items():
+        path = os.path.join(root, relative_path)
+        if not os.path.isfile(path):
+            raise ValueError(f"Missing required training file: {path}")
+        loaded[label] = _as_stack(mf.read(path), label)
+    for prefix in ("s2", "val"):
+        inputs = loaded[f"{prefix}_input"]
+        labels = loaded[f"{prefix}_label"]
+        if len(inputs) != len(labels):
+            raise ValueError(f"{prefix} input and label stacks must contain the same number of images")
+        if inputs.shape[1:] != labels.shape[1:]:
+            raise ValueError(f"{prefix} input and label patch shapes must match")
+    return loaded
+
+
+def set_random_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def _finite_mean(losses, label, log_file):
+    value = float(np.average(losses))
+    if not np.isfinite(value):
+        message = f"Training produced a non-finite {label}: {value}"
+        log_file.write(message + '\n')
+        log_file.close()
+        raise RuntimeError(message)
+    return value
+
+
+def main(preprocess_path, model_save_path, gpus, batch_size, log_path, epochs=101, seed=42):
+    if epochs < 1:
+        raise ValueError("epochs must be a positive integer")
+    if batch_size < 1:
+        raise ValueError("batch_size must be a positive integer")
+    os.makedirs(model_save_path, exist_ok=True)
+    stale_best_model = os.path.join(model_save_path, 'best_model.pth')
+    if os.path.exists(stale_best_model):
+        os.remove(stale_best_model)
+    datasets = validate_training_data(preprocess_path)
     # 确保日志目录存在
     if log_path and not os.path.exists(log_path):
         os.makedirs(log_path)
@@ -38,28 +102,25 @@ def main(preprocess_path, model_save_path, gpus, batch_size, log_path):
     log_file.write('Command: python ' + ' '.join(sys.argv) + '\n')
     log_file.write('reading data ~~\n')
     
+    set_random_seed(seed)
+
     step1_path = os.path.join(preprocess_path, 's1')
     log_file.write('reading data from '+ step1_path +'\n')
     
-    # 增加简单的文件存在性检查
-    if not os.path.exists(step1_path):
-        print(f"Error: Data path not found: {step1_path}")
-        return
-
-    s1_data = mf.read(os.path.join(step1_path, 'particles.mrcs'))
+    s1_data = datasets["s1"]
     s1_train_dataset = util_self.CustomDataset(s1_data, s1_data)
     s1_train_dataloader = torch.utils.data.DataLoader(s1_train_dataset, batch_size=batch_size, shuffle=True)
 
     step2_path = os.path.join(preprocess_path, 's2')
     log_file.write('reading data from '+step2_path+'\n')
-    s2_input_data = mf.read(os.path.join(step2_path, 'input.mrcs'))
-    s2_label_data = mf.read(os.path.join(step2_path, 'label.mrcs'))
+    s2_input_data = datasets["s2_input"]
+    s2_label_data = datasets["s2_label"]
     s2_train_dataset = util_self.CustomDataset(s2_input_data, s2_label_data)
     s2_train_dataloader = torch.utils.data.DataLoader(s2_train_dataset, batch_size=batch_size, shuffle=True)
 
     step3_path = os.path.join(preprocess_path, 's3')
     log_file.write('reading data from '+step3_path+'\n')
-    s3_data = mf.read(os.path.join(step3_path, 'noise.mrcs'))
+    s3_data = datasets["s3"]
     s3_data_rand = copy.deepcopy(s3_data)
     np.random.shuffle(s3_data_rand)
     s3_train_dataset = util_self.CustomDataset(s3_data, s3_data_rand)
@@ -67,10 +128,10 @@ def main(preprocess_path, model_save_path, gpus, batch_size, log_path):
 
     val_path = os.path.join(preprocess_path, 'val')
     log_file.write('reading data from '+val_path+'\n')
-    val_input_data = mf.read(os.path.join(val_path, 'input.mrcs'))
-    val_label_data = mf.read(os.path.join(val_path, 'label.mrcs'))
+    val_input_data = datasets["val_input"]
+    val_label_data = datasets["val_label"]
     val_dataset = util_self.CustomDataset(val_input_data, val_label_data)
-    val_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=2*batch_size, shuffle=True)
+    val_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=2*batch_size, shuffle=False)
 
     # 设置 GPU
     if torch.cuda.is_available():
@@ -80,16 +141,10 @@ def main(preprocess_path, model_save_path, gpus, batch_size, log_path):
         print("Warning: CUDA not found, using CPU.")
         model = unet2d.UDenoiseNet()
 
-    seed = 42
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-
     criterion = torch.nn.MSELoss()
     optimizer = torch.optim.SGD(model.parameters(), lr=0.001)
     scheduler = StepLR(optimizer, step_size=100, gamma=0.9)
 
-    EPOCHES = 101
     s1_train_epochs_loss = []
     s2_train_epochs_loss = []
     s3_train_epochs_loss = []
@@ -102,7 +157,8 @@ def main(preprocess_path, model_save_path, gpus, batch_size, log_path):
     # best_val_loss = float('inf')
     # counter = 0
 
-    for epoch in tqdm(range(EPOCHES), file=log_file):
+    loss_records = []
+    for epoch in tqdm(range(epochs), file=log_file):
         model.train()
         s1_train_epoch_loss = []
         s2_train_epoch_loss = []
@@ -125,11 +181,6 @@ def main(preprocess_path, model_save_path, gpus, batch_size, log_path):
             optimizer.step()
             s1_train_epoch_loss.append(loss.item())
         
-        # Scheduler 通常是在 epoch 结束时更新，或者 S1/S2/S3 全部跑完后更新一次
-        # 原代码在每个 batch 循环里都写了 scheduler.step() 是不常见的用法
-        # 但为了保持原逻辑不变，这里仅做缩进调整，或者你可以确认是否需要移到外层
-        scheduler.step() 
-
         # 训练 S2
         for batch_idx, (inputs, targets) in enumerate(s2_train_dataloader):
             if torch.cuda.is_available():
@@ -144,7 +195,6 @@ def main(preprocess_path, model_save_path, gpus, batch_size, log_path):
             loss = criterion(outputs, targets)
             loss.backward()
             optimizer.step()
-            scheduler.step()
             s2_train_epoch_loss.append(loss.item())
 
         # 训练 S3
@@ -161,52 +211,78 @@ def main(preprocess_path, model_save_path, gpus, batch_size, log_path):
             loss = criterion(outputs, targets)
             loss.backward()
             optimizer.step()
-            scheduler.step()
             s3_train_epoch_loss.append(loss.item())
 
-        # 保存模型
-        if (epoch+1) % 1 == 0:
-            torch.save(model, os.path.join(model_save_path, str(epoch+1)+'.pth'))
-            checkpoint = {
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-            }
-            torch.save(checkpoint, os.path.join(model_save_path, 'checkpoint.pth'))
+        scheduler.step()
 
-        s1_train_epochs_loss.append(np.average(s1_train_epoch_loss))
-        s2_train_epochs_loss.append(np.average(s2_train_epoch_loss))
-        s3_train_epochs_loss.append(np.average(s3_train_epoch_loss))
-        log_file.write('epoch:'+str(epoch)+' s1_loss:'+str(s1_train_epochs_loss[-1])+' s2_loss:'+str(s2_train_epochs_loss[-1])+' s3_loss:'+str(s3_train_epochs_loss[-1])+'\n')
+        s1_loss = _finite_mean(s1_train_epoch_loss, 'S1 loss', log_file)
+        s2_loss = _finite_mean(s2_train_epoch_loss, 'S2 loss', log_file)
+        s3_loss = _finite_mean(s3_train_epoch_loss, 'S3 loss', log_file)
 
         # 验证
-        if (epoch+1) % 1 == 0:
-            log_file.write('valid modeling ...\n')
-            model.eval()
-            with torch.no_grad():
-                valid_epoch_loss = []
-                for idx, (inputs, labels) in enumerate(val_dataloader):
-                    if torch.cuda.is_available():
-                        inputs = inputs.unsqueeze(1).cuda()
-                        labels = labels.unsqueeze(1).cuda()
-                    else:
-                        inputs = inputs.unsqueeze(1)
-                        labels = labels.unsqueeze(1)
-                        
-                    outputs = model(inputs)
-                    loss = criterion(labels, outputs)
-                    valid_epoch_loss.append(loss.item())
-                valid_epochs_loss.append(np.average(valid_epoch_loss))
-            log_file.write('epoch:'+str(epoch)+' valid_loss:'+str(valid_epochs_loss[-1])+'\n')
+        log_file.write('valid modeling ...\n')
+        model.eval()
+        with torch.no_grad():
+            valid_epoch_loss = []
+            for idx, (inputs, labels) in enumerate(val_dataloader):
+                if torch.cuda.is_available():
+                    inputs = inputs.unsqueeze(1).cuda()
+                    labels = labels.unsqueeze(1).cuda()
+                else:
+                    inputs = inputs.unsqueeze(1)
+                    labels = labels.unsqueeze(1)
+                outputs = model(inputs)
+                loss = criterion(labels, outputs)
+                valid_epoch_loss.append(loss.item())
+        valid_loss = _finite_mean(valid_epoch_loss, 'validation loss', log_file)
 
-if __name__ == '__main__':
+        torch.save(model, os.path.join(model_save_path, str(epoch+1)+'.pth'))
+        checkpoint = {
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+        }
+        torch.save(checkpoint, os.path.join(model_save_path, 'checkpoint.pth'))
+
+        s1_train_epochs_loss.append(s1_loss)
+        s2_train_epochs_loss.append(s2_loss)
+        s3_train_epochs_loss.append(s3_loss)
+        valid_epochs_loss.append(valid_loss)
+        loss_records.append({"epoch": epoch + 1, "s2_loss": s2_loss})
+        best = materialize_best_model(loss_records, model_save_path)
+        if best is not None:
+            log_file.write(
+                'best_model epoch:{} s2_loss:{} rule:{}\n'.format(
+                    best['epoch'], best['s2_loss'], BEST_MODEL_RULE
+                )
+            )
+        log_file.write(
+            'epoch:{} s1_loss:{} s2_loss:{} s3_loss:{} valid_loss:{}\n'.format(
+                epoch, s1_loss, s2_loss, s3_loss, valid_loss
+            )
+        )
+
+    if not os.path.exists(os.path.join(model_save_path, 'best_model.pth')):
+        log_file.write(
+            'No stable best model: no epoch > 20 had 10 following epochs within the 10% s2_loss stability rule. '
+            'Choose a specific epoch .pth for prediction.\n'
+        )
+    log_file.close()
+
+
+def build_parser():
     parser = argparse.ArgumentParser(description='Train 3-step compress')
     parser.add_argument('--input_path', '-i', required=True, type=str, help='Preprocess data path (s1, s2, s3 folders)')
     parser.add_argument('--out_path', '-o', required=True, type=str, help='Model save path')
     parser.add_argument('--log_path', '-l', default=None, type=str, help='Log directory path')
     parser.add_argument('--batch_size', '-b', type=int, default=64, help='Batch size')
     parser.add_argument('--gpus', '-d', type=str, default='0', help='GPU ID')
-    args = parser.parse_args()
+    parser.add_argument('--epochs', '-e', type=int, default=101, help='Number of training epochs')
+    parser.add_argument('--seed', type=int, default=42)
+    return parser
+
+if __name__ == '__main__':
+    args = build_parser().parse_args()
 
     if not os.path.exists(args.out_path):
         os.makedirs(args.out_path)
@@ -214,4 +290,4 @@ if __name__ == '__main__':
     # 如果没有提供 log_path，则默认在 out_path 下
     log_p = args.log_path if args.log_path else args.out_path
 
-    main(args.input_path, args.out_path, args.gpus, args.batch_size, log_p)
+    main(args.input_path, args.out_path, args.gpus, args.batch_size, log_p, epochs=args.epochs, seed=args.seed)

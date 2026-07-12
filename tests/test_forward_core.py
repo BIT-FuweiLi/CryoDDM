@@ -76,6 +76,8 @@ class ForwardTests(unittest.TestCase):
             dict(beta=0.1, total_steps=1, start=1),
             dict(beta=0.1, total_steps=5, start=0),
             dict(beta=0.1, total_steps=5, start=5),
+            dict(beta=np.nan, total_steps=5, start=2),
+            dict(beta=np.inf, total_steps=5, start=2),
         ]
         for kwargs in invalid:
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
@@ -89,6 +91,10 @@ class ForwardTests(unittest.TestCase):
 
         self.assertEqual(train_input.shape[0], 6)
         self.assertEqual(train_label.shape, train_input.shape)
+        np.testing.assert_allclose(train_input.reshape(3, 2, 8, 8), [states[4], states[3], states[2]])
+        np.testing.assert_allclose(train_label.reshape(3, 2, 8, 8), [states[3], states[2], states[1]])
+        np.testing.assert_allclose(val_input, states[5])
+        np.testing.assert_allclose(val_label, states[4])
         for input_patch, label_patch in zip(train_input, train_label):
             self.assertGreater(np.mean((input_patch - clean[0]) ** 2), np.mean((label_patch - clean[0]) ** 2))
         self.assertGreater(np.mean((val_input - clean[0]) ** 2), np.mean((val_label - clean[0]) ** 2))
