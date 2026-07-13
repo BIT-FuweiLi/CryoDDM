@@ -1,36 +1,39 @@
 import sys
 import os
-import numpy as np
-import platform
 import subprocess
 from functools import partial
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
+    QDialog,
+    QDialogButtonBox,
     QMainWindow,
-    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
+    QPushButton,
     QGraphicsItem,
     QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsPixmapItem,
     QGraphicsView,
     QHeaderView,
+    QVBoxLayout,
 )
-from PySide6.QtCore import QThread, Signal, QPointF, QEvent, Qt, QSize
+from PySide6.QtCore import QThread, Signal, QEvent, Qt, QSize, QDir
 from PySide6.QtGui import QImage, QPixmap, QPen, QColor, QIcon, QPainter, QCursor
 from collections import OrderedDict
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Slot
 import time
-import mrcfile
-from skimage import exposure
 
 # IMPORT / GUI AND MODULES AND WIDGETS
 from modules import *
 from widgets import *
 
 os.environ["QT_FONT_DPI"] = "96"  # FIX Problem for High DPI and Scale above 100%
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
 
 # 全局 widgets 引用（由 Ui_MainWindow 初始化）
 widgets = None
@@ -39,6 +42,370 @@ widgets = None
 # -------------------- Add this runnable and signals class near other class defs (above MainWindow) --------------------
 class LoaderSignals(QObject):
     frameLoaded = Signal(int, QImage, object)
+
+
+class ImageDependencyWarmupRunnable(QRunnable):
+    """Preload image dependencies after the window appears, without blocking startup."""
+
+    @Slot()
+    def run(self):
+        try:
+            __import__("numpy")
+            __import__("mrcfile")
+        except Exception as e:
+            print(f"[ImageWarmup] dependency preload skipped: {e}")
+
+
+class NameOnlyFileDialog(QDialog):
+    """Directory browser that lists names only and never previews large files."""
+
+    def __init__(self, parent, title, start_dir, mode="files", allowed_suffixes=None, default_suffix=""):
+        super().__init__(parent)
+        self.mode = mode
+        self.allowed_suffixes = tuple(s.lower() for s in (allowed_suffixes or ()))
+        self.default_suffix = default_suffix.lstrip(".")
+        self._selected_paths = []
+        self.current_dir = self._safe_start_dir(start_dir)
+
+        self.setWindowTitle(title)
+        self.resize(860, 580)
+        self.setMinimumSize(680, 440)
+        self._apply_style()
+
+        title_label = QLabel(title)
+        title_label.setObjectName("dialogTitle")
+
+        subtitle = "Name-only browser"
+        if mode == "files":
+            subtitle = "Select files"
+        elif mode == "directory":
+            subtitle = "Select folder"
+        elif mode == "save":
+            subtitle = "Save file"
+        subtitle_label = QLabel(subtitle)
+        subtitle_label.setObjectName("dialogSubtitle")
+
+        self.path_edit = QLineEdit(self.current_dir)
+        self.path_edit.setObjectName("pathEdit")
+        self.path_edit.returnPressed.connect(lambda: self._set_directory(self.path_edit.text()))
+
+        self.up_button = QPushButton("Up")
+        self.up_button.setObjectName("secondaryButton")
+        self.up_button.clicked.connect(self._go_up)
+
+        path_row = QHBoxLayout()
+        path_row.setSpacing(8)
+        path_row.addWidget(QLabel("Folder"))
+        path_row.addWidget(self.path_edit, 1)
+        path_row.addWidget(self.up_button)
+
+        self.file_list = QListWidget()
+        self.file_list.setObjectName("fileList")
+        self.file_list.setUniformItemSizes(True)
+        self.file_list.setAlternatingRowColors(True)
+        self.file_list.setSelectionMode(
+            QAbstractItemView.ExtendedSelection if mode == "files" else QAbstractItemView.SingleSelection
+        )
+        self.file_list.itemDoubleClicked.connect(self._handle_double_click)
+
+        self.name_edit = QLineEdit()
+        self.name_edit.setObjectName("pathEdit")
+        self.name_edit.setPlaceholderText("File name")
+        self.name_edit.setVisible(mode == "save")
+
+        save_row = QHBoxLayout()
+        save_row.setSpacing(8)
+        self.name_label = QLabel("File name")
+        self.name_label.setVisible(mode == "save")
+        save_row.addWidget(self.name_label)
+        save_row.addWidget(self.name_edit, 1)
+
+        self.status_label = QLabel("")
+        self.status_label.setObjectName("statusLabel")
+
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Open | QDialogButtonBox.Cancel)
+        action_button = self.buttons.button(QDialogButtonBox.Open)
+        if action_button is not None:
+            if mode == "directory":
+                action_button.setText("Choose Folder")
+            elif mode == "save":
+                action_button.setText("Save")
+            else:
+                action_button.setText("Open")
+            action_button.setObjectName("primaryButton")
+        cancel_button = self.buttons.button(QDialogButtonBox.Cancel)
+        if cancel_button is not None:
+            cancel_button.setObjectName("secondaryButton")
+        self.buttons.accepted.connect(self._accept_selection)
+        self.buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+        layout.addWidget(title_label)
+        layout.addWidget(subtitle_label)
+        layout.addLayout(path_row)
+        layout.addWidget(self.file_list, 1)
+        layout.addLayout(save_row)
+        layout.addWidget(self.status_label)
+        layout.addWidget(self.buttons)
+
+        self._populate()
+
+    def _apply_style(self):
+        self.setStyleSheet("""
+        QDialog {
+            background-color: rgb(245, 246, 248);
+            color: rgb(31, 35, 40);
+            font: 10pt "Segoe UI";
+        }
+        QLabel {
+            color: rgb(31, 35, 40);
+        }
+        QLabel#dialogTitle {
+            color: rgb(24, 28, 33);
+            font: 600 13pt "Segoe UI";
+        }
+        QLabel#dialogSubtitle,
+        QLabel#statusLabel {
+            color: rgb(92, 99, 112);
+        }
+        QLineEdit#pathEdit {
+            background-color: rgb(255, 255, 255);
+            border: 1px solid rgb(207, 212, 220);
+            border-radius: 6px;
+            color: rgb(31, 35, 40);
+            padding: 7px 9px;
+            selection-background-color: rgb(209, 213, 219);
+        }
+        QListWidget#fileList {
+            background-color: rgb(255, 255, 255);
+            border: 1px solid rgb(207, 212, 220);
+            border-radius: 6px;
+            color: rgb(31, 35, 40);
+            outline: 0;
+            padding: 4px;
+        }
+        QListWidget#fileList::item {
+            min-height: 26px;
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+        QListWidget#fileList::item:alternate {
+            background-color: rgb(249, 250, 251);
+        }
+        QListWidget#fileList::item:selected {
+            background-color: rgb(209, 213, 219);
+            color: rgb(17, 24, 39);
+        }
+        QPushButton {
+            background-color: rgb(255, 255, 255);
+            border: 1px solid rgb(207, 212, 220);
+            border-radius: 6px;
+            color: rgb(31, 35, 40);
+            min-height: 28px;
+            padding: 5px 14px;
+        }
+        QPushButton:hover {
+            background-color: rgb(238, 240, 243);
+        }
+        QPushButton#primaryButton {
+            background-color: rgb(75, 85, 99);
+            border-color: rgb(75, 85, 99);
+            color: rgb(255, 255, 255);
+            font-weight: 600;
+        }
+        QPushButton#primaryButton:hover {
+            background-color: rgb(55, 65, 81);
+        }
+        QScrollBar:vertical {
+            background: rgb(245, 246, 248);
+            width: 11px;
+            margin: 0px;
+        }
+        QScrollBar::handle:vertical {
+            background: rgb(196, 201, 209);
+            border-radius: 5px;
+            min-height: 32px;
+        }
+        QScrollBar:horizontal {
+            background: rgb(245, 246, 248);
+            height: 11px;
+            margin: 0px;
+        }
+        QScrollBar::handle:horizontal {
+            background: rgb(196, 201, 209);
+            border-radius: 5px;
+            min-width: 32px;
+        }
+        QScrollBar::add-line,
+        QScrollBar::sub-line {
+            height: 0px;
+            width: 0px;
+        }
+        """)
+
+    def selected_paths(self):
+        return list(self._selected_paths)
+
+    def _safe_start_dir(self, start_dir):
+        candidate = start_dir or QDir.homePath()
+        try:
+            if os.path.isdir(candidate):
+                return os.path.abspath(candidate)
+        except Exception:
+            pass
+        return QDir.homePath()
+
+    def _matches_filter(self, name):
+        if not self.allowed_suffixes:
+            return True
+        lower_name = name.lower()
+        return any(lower_name.endswith(suffix) for suffix in self.allowed_suffixes)
+
+    def _entry_kind(self, entry):
+        try:
+            if entry.is_dir(follow_symlinks=False):
+                return "dir"
+        except OSError:
+            pass
+        try:
+            if entry.is_symlink():
+                return "link"
+        except OSError:
+            pass
+        return "file"
+
+    def _populate(self):
+        self.file_list.clear()
+        rows = []
+        try:
+            with os.scandir(self.current_dir) as entries:
+                for entry in entries:
+                    name = entry.name
+                    kind = self._entry_kind(entry)
+                    if self.mode == "directory" and kind not in ("dir", "link"):
+                        continue
+                    if self.mode in ("files", "save") and kind == "file" and not self._matches_filter(name):
+                        continue
+                    if self.mode in ("files", "save") and kind == "link" and self.allowed_suffixes and not self._matches_filter(name):
+                        try:
+                            if not os.path.isdir(entry.path):
+                                continue
+                        except Exception:
+                            continue
+                    rows.append((kind != "dir", name.lower(), name, entry.path, kind))
+        except Exception as e:
+            self.status_label.setText(f"Unable to read folder: {e}")
+            return
+
+        rows.sort()
+        for _, _, name, path, kind in rows:
+            label = f"[DIR]  {name}" if kind == "dir" else f"       {name}"
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, {"path": path, "kind": kind})
+            self.file_list.addItem(item)
+        self.path_edit.setText(self.current_dir)
+        self.status_label.setText(f"{len(rows)} names listed")
+
+    def _set_directory(self, path):
+        try:
+            candidate = os.path.abspath(os.path.expanduser(path))
+            if os.path.isdir(candidate):
+                self.current_dir = candidate
+                self._populate()
+        except Exception as e:
+            self.status_label.setText(f"Unable to open folder: {e}")
+
+    def _go_up(self):
+        parent_dir = os.path.dirname(self.current_dir)
+        if parent_dir and parent_dir != self.current_dir:
+            self._set_directory(parent_dir)
+
+    def _handle_double_click(self, item):
+        data = item.data(Qt.UserRole) or {}
+        path = data.get("path")
+        if not path:
+            return
+        try:
+            if os.path.isdir(path):
+                self._set_directory(path)
+                return
+        except Exception as e:
+            self.status_label.setText(f"Unable to open folder: {e}")
+            return
+        if self.mode == "save":
+            self.name_edit.setText(os.path.basename(path))
+            return
+        if self.mode == "files":
+            self._selected_paths = [path]
+            self.accept()
+
+    def _accept_selection(self):
+        selected_items = self.file_list.selectedItems()
+        if self.mode == "directory":
+            if selected_items:
+                data = selected_items[0].data(Qt.UserRole) or {}
+                path = data.get("path")
+                if path:
+                    try:
+                        if os.path.isdir(path):
+                            self._selected_paths = [path]
+                            self.accept()
+                            return
+                    except Exception as e:
+                        self.status_label.setText(f"Unable to choose folder: {e}")
+                        return
+                    self.status_label.setText("Select a folder.")
+                    return
+            self._selected_paths = [self.current_dir]
+            self.accept()
+            return
+
+        if self.mode == "save":
+            file_name = self.name_edit.text().strip()
+            if not file_name and selected_items:
+                data = selected_items[0].data(Qt.UserRole) or {}
+                path = data.get("path")
+                if path:
+                    try:
+                        if os.path.isdir(path):
+                            self._set_directory(path)
+                            return
+                    except Exception as e:
+                        self.status_label.setText(f"Unable to open folder: {e}")
+                        return
+                    file_name = os.path.basename(path)
+            if not file_name:
+                self.status_label.setText("Enter a file name.")
+                return
+            if self.default_suffix and not file_name.lower().endswith(f".{self.default_suffix.lower()}"):
+                file_name += f".{self.default_suffix}"
+            self._selected_paths = [os.path.join(self.current_dir, file_name)]
+            self.accept()
+            return
+
+        selected_paths = []
+        for item in selected_items:
+            data = item.data(Qt.UserRole) or {}
+            path = data.get("path")
+            if not path:
+                continue
+            try:
+                if os.path.isdir(path):
+                    if len(selected_items) == 1:
+                        self._set_directory(path)
+                        return
+                    continue
+            except Exception:
+                continue
+            selected_paths.append(path)
+
+        if selected_paths:
+            self._selected_paths = selected_paths
+            self.accept()
+        else:
+            self.status_label.setText("Select one or more files.")
 
 
 class MRCFullLoadRunnable(QRunnable):
@@ -65,6 +432,8 @@ class MRCFullLoadRunnable(QRunnable):
         self.signals = LoaderSignals()
 
     def _build_preview(self, data):
+        import numpy as np
+
         if data is None:
             return None, None
 
@@ -94,6 +463,8 @@ class MRCFullLoadRunnable(QRunnable):
         # difference between responsive browsing and seconds of memory churn.
         if self.do_adapthist and enhanced_data.size <= 2_000_000:
             try:
+                from skimage import exposure
+
                 adaptive_data = exposure.equalize_adapthist(enhanced_data, clip_limit=0.01)
                 enhanced_data = (adaptive_data * 255).astype(np.uint8)
             except Exception:
@@ -126,6 +497,8 @@ class MRCFullLoadRunnable(QRunnable):
     def run(self):
         t0 = time.perf_counter()
         try:
+            import mrcfile
+
             if self.file_path.endswith(".gz"):
                 with mrcfile.open(self.file_path, permissive=True) as m:
                     qimg, meta = self._build_preview(m.data)
@@ -163,6 +536,7 @@ class MainWindow(QMainWindow):
 
         # 内部 state
         self.coordinates = {}
+        self._last_dialog_dir = QDir.homePath()
         Settings.ENABLE_CUSTOM_TITLE_BAR = True
 
         title = "CryoDDM - Modern GUI"
@@ -333,6 +707,7 @@ class MainWindow(QMainWindow):
         self.script_runner = None
         self._apply_runtime_ui_fixes()
         self.show()
+        self._start_image_dependency_warmup()
 
     # -------------------------
     # 事件位置兼容函数：统一从事件获取 viewport 坐标（QPoint）
@@ -389,6 +764,12 @@ class MainWindow(QMainWindow):
         self.ui.titleRightInfo.setToolTip(self.ui.titleRightInfo.text())
         self.ui.checkBox_particle_coord.setText("Use particle coordinates")
         self.ui.checkBox_particle_coord.setToolTip("Use particle data to find noisy regions")
+
+    def _start_image_dependency_warmup(self):
+        self._warmup_thread_pool = QThreadPool(self)
+        self._warmup_thread_pool.setMaxThreadCount(1)
+        warmup = ImageDependencyWarmupRunnable()
+        self._warmup_thread_pool.start(warmup, -1)
 
     def _connect_window_control_buttons(self):
         button_actions = (
@@ -450,7 +831,7 @@ class MainWindow(QMainWindow):
     def _event_to_viewport_point(self, event):
         """
         从鼠标/滚轮事件安全获取视口坐标。
-        优先使用 event.position()（QPointF），回退到 event.pos()。
+        优先使用 event.position()，回退到 event.pos()。
         返回 None 表示无法获取。
         """
         try:
@@ -650,10 +1031,66 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+    def _dialog_start_dir(self):
+        return self._last_dialog_dir or QDir.homePath()
+
+    def _remember_dialog_dir(self, selected_path, is_directory=False):
+        if not selected_path:
+            return
+        if is_directory:
+            self._last_dialog_dir = selected_path
+            return
+        directory = os.path.dirname(selected_path)
+        if directory:
+            self._last_dialog_dir = directory
+
+    def _select_existing_files(self, title, allowed_suffixes=None):
+        start_dir = self._dialog_start_dir()
+        dialog = NameOnlyFileDialog(self, title, start_dir, mode="files", allowed_suffixes=allowed_suffixes)
+        if dialog.exec() != QDialog.Accepted:
+            return []
+        file_paths = dialog.selected_paths()
+        if file_paths:
+            self._remember_dialog_dir(file_paths[0])
+        return file_paths
+
+    def _select_existing_directory(self, title):
+        start_dir = self._dialog_start_dir()
+        dialog = NameOnlyFileDialog(self, title, start_dir, mode="directory")
+        if dialog.exec() != QDialog.Accepted:
+            return ""
+        folder_paths = dialog.selected_paths()
+        folder_path = folder_paths[0] if folder_paths else ""
+        if folder_path:
+            self._remember_dialog_dir(folder_path, is_directory=True)
+        return folder_path
+
+    def _select_save_file(self, title, default_suffix=""):
+        start_dir = self._dialog_start_dir()
+        suffixes = (f".{default_suffix.lstrip('.')}",) if default_suffix else None
+        dialog = NameOnlyFileDialog(
+            self,
+            title,
+            start_dir,
+            mode="save",
+            allowed_suffixes=suffixes,
+            default_suffix=default_suffix,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return ""
+        file_paths = dialog.selected_paths()
+        file_path = file_paths[0] if file_paths else ""
+        if file_path:
+            if default_suffix and not file_path.endswith(f".{default_suffix}"):
+                file_path += f".{default_suffix}"
+            self._remember_dialog_dir(file_path)
+        return file_path
+
     # Performance overrides for the legacy full-resolution loader above.
     def load_mrc_files(self):
-        file_paths, _ = QFileDialog.getOpenFileNames(
-            self, "Select MRC files", "", "MRC Files (*.mrc *.mrcs *.mrcs.gz);;All Files (*)"
+        file_paths = self._select_existing_files(
+            "Select MRC files",
+            allowed_suffixes=(".mrc", ".mrcs", ".mrcs.gz"),
         )
         if not file_paths:
             return
@@ -822,29 +1259,6 @@ class MainWindow(QMainWindow):
             self.animate_zoom(0.8, anchor=getattr(self, "last_viewport_pos", None))
         except Exception:
             self.ui.mrcView.scale(1 / 1.2, 1 / 1.2)
-
-    # 兼容旧的直接绑定点击（保留）
-    def mouse_press_event(self, event):
-        if self.pixmap_item:
-            try:
-                vp = self._event_to_viewport_point(event)
-                if vp is None:
-                    return
-                scene_pos = self.ui.mrcView.mapToScene(vp)
-                pixmap_pos = self.pixmap_item.mapFromScene(scene_pos)
-                x_pixel = int(pixmap_pos.x())
-                y_pixel = int(pixmap_pos.y())
-                if event.modifiers() == Qt.ControlModifier:
-                    self.remove_box(x_pixel, y_pixel)
-                    self.remove_coordinates(x_pixel, y_pixel)
-                else:
-                    try:
-                        self.ui.label_click_pos.setText(f"x: ({x_pixel}, y: {y_pixel})")
-                    except Exception:
-                        pass
-                    self.save_coordinates(x_pixel, y_pixel)
-            except Exception as e:
-                print("mouse_press_event error:", e)
 
     def load_coordinates_from_file(self, file_path):
         if not os.path.exists(file_path):
@@ -1058,10 +1472,6 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def toggle_log(self, checked):
-        self.ui.lineEdit_log.setVisible(checked)
-        self.ui.btn_for_log.setVisible(checked)
-
     def toggle_model(self, checked):
         self.ui.lineEdit_m.setVisible(checked)
         self.ui.btn_for_m.setVisible(checked)
@@ -1087,18 +1497,18 @@ class MainWindow(QMainWindow):
             self.ui.lineEdit_15.setVisible(False)
 
     def browse_file_folder(self, target_line_edit):
-        folder_path = QFileDialog.getExistingDirectory(self, "Choose folder", "")
+        folder_path = self._select_existing_directory("Choose folder")
         if folder_path:
             target_line_edit.setText(folder_path)
 
     def browse_file(self, target_line_edit):
-        file_paths, _ = QFileDialog.getOpenFileNames(self, "Choose file", "", "All files (*)")
+        file_paths = self._select_existing_files("Choose file")
         if file_paths:
             file_paths_str = "\n".join(file_paths)
             target_line_edit.setText(file_paths_str)
 
     def browse_file_txt(self, target_line_edit):
-        file_path, _ = QFileDialog.getSaveFileName(self, "选择或新建 .txt 文件", "", "Text files (*.txt)")
+        file_path = self._select_save_file("选择或新建 .txt 文件", "txt")
         if file_path:
             if not file_path.endswith(".txt"):
                 file_path += ".txt"
@@ -1107,12 +1517,6 @@ class MainWindow(QMainWindow):
                     pass
             target_line_edit.setText(file_path)
             self.load_coordinates_from_file(file_path)
-
-    def update_line_edit_style(self, line_edit):
-        if line_edit.text() == "":
-            line_edit.setStyleSheet("border: 2px solid red;")
-        else:
-            line_edit.setStyleSheet("")
 
     def sync_text_gpu_id(self):
         sender = self.sender()
