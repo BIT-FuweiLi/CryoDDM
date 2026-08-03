@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QMainWindow,
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -23,7 +24,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QVBoxLayout,
 )
-from PySide6.QtCore import QThread, Signal, QEvent, Qt, QSize, QDir
+from PySide6.QtCore import QThread, Signal, QEvent, Qt, QSize, QDir, QSettings
 from PySide6.QtGui import QImage, QPixmap, QPen, QColor, QIcon, QPainter, QCursor
 from collections import OrderedDict
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Slot
@@ -59,11 +60,21 @@ class ImageDependencyWarmupRunnable(QRunnable):
 class NameOnlyFileDialog(QDialog):
     """Directory browser that lists names only and never previews large files."""
 
-    def __init__(self, parent, title, start_dir, mode="files", allowed_suffixes=None, default_suffix=""):
+    def __init__(
+            self,
+            parent,
+            title,
+            start_dir,
+            mode="files",
+            allowed_suffixes=None,
+            default_suffix="",
+            recent_dirs=None,
+    ):
         super().__init__(parent)
         self.mode = mode
         self.allowed_suffixes = tuple(s.lower() for s in (allowed_suffixes or ()))
         self.default_suffix = default_suffix.lstrip(".")
+        self.recent_dirs = list(recent_dirs or [])
         self._selected_paths = []
         self.current_dir = self._safe_start_dir(start_dir)
 
@@ -98,6 +109,19 @@ class NameOnlyFileDialog(QDialog):
         path_row.addWidget(QLabel("Folder"))
         path_row.addWidget(self.path_edit, 1)
         path_row.addWidget(self.up_button)
+
+        self.recent_combo = QComboBox()
+        self.recent_combo.setObjectName("recentCombo")
+        self.recent_combo.addItem("Recent folders", "")
+        for folder in self.recent_dirs[:5]:
+            self.recent_combo.addItem(folder, folder)
+        self.recent_combo.setEnabled(bool(self.recent_dirs))
+        self.recent_combo.activated.connect(self._open_recent_dir)
+
+        recent_row = QHBoxLayout()
+        recent_row.setSpacing(8)
+        recent_row.addWidget(QLabel("Recent"))
+        recent_row.addWidget(self.recent_combo, 1)
 
         self.file_list = QListWidget()
         self.file_list.setObjectName("fileList")
@@ -145,6 +169,7 @@ class NameOnlyFileDialog(QDialog):
         layout.addWidget(title_label)
         layout.addWidget(subtitle_label)
         layout.addLayout(path_row)
+        layout.addLayout(recent_row)
         layout.addWidget(self.file_list, 1)
         layout.addLayout(save_row)
         layout.addWidget(self.status_label)
@@ -177,6 +202,28 @@ class NameOnlyFileDialog(QDialog):
             color: rgb(31, 35, 40);
             padding: 7px 9px;
             selection-background-color: rgb(209, 213, 219);
+        }
+        QComboBox#recentCombo {
+            background-color: rgb(255, 255, 255);
+            border: 1px solid rgb(207, 212, 220);
+            border-radius: 6px;
+            color: rgb(31, 35, 40);
+            padding: 6px 9px;
+        }
+        QComboBox#recentCombo:disabled {
+            color: rgb(156, 163, 175);
+            background-color: rgb(238, 240, 243);
+        }
+        QComboBox#recentCombo::drop-down {
+            border: 0px;
+            width: 26px;
+        }
+        QComboBox#recentCombo QAbstractItemView {
+            background-color: rgb(255, 255, 255);
+            border: 1px solid rgb(207, 212, 220);
+            color: rgb(31, 35, 40);
+            selection-background-color: rgb(209, 213, 219);
+            selection-color: rgb(17, 24, 39);
         }
         QListWidget#fileList {
             background-color: rgb(255, 255, 255);
@@ -321,6 +368,14 @@ class NameOnlyFileDialog(QDialog):
         parent_dir = os.path.dirname(self.current_dir)
         if parent_dir and parent_dir != self.current_dir:
             self._set_directory(parent_dir)
+
+    def _open_recent_dir(self, index):
+        if isinstance(index, str):
+            path = index
+        else:
+            path = self.recent_combo.itemData(index)
+        if path:
+            self._set_directory(path)
 
     def _handle_double_click(self, item):
         data = item.data(Qt.UserRole) or {}
@@ -536,7 +591,11 @@ class MainWindow(QMainWindow):
 
         # 内部 state
         self.coordinates = {}
+        self._browse_settings = QSettings("CryoDDM", "CryoDDM")
+        self._recent_dialog_dirs = self._load_recent_dialog_dirs()
         self._last_dialog_dir = QDir.homePath()
+        if self._recent_dialog_dirs:
+            self._last_dialog_dir = self._recent_dialog_dirs[0]
         Settings.ENABLE_CUSTOM_TITLE_BAR = True
 
         title = "CryoDDM - Modern GUI"
@@ -1034,19 +1093,63 @@ class MainWindow(QMainWindow):
     def _dialog_start_dir(self):
         return self._last_dialog_dir or QDir.homePath()
 
+    def _load_recent_dialog_dirs(self):
+        value = self._browse_settings.value("browse/recentDirs", [])
+        if isinstance(value, str):
+            value = [value]
+        if value is None:
+            value = []
+        recent_dirs = []
+        seen = set()
+        for folder in value:
+            if not folder:
+                continue
+            folder = os.path.normpath(str(folder))
+            key = os.path.normcase(folder)
+            if key in seen:
+                continue
+            seen.add(key)
+            recent_dirs.append(folder)
+            if len(recent_dirs) >= 5:
+                break
+        return recent_dirs
+
+    def _remember_recent_dialog_dir(self, folder):
+        if not folder:
+            return
+        folder = os.path.normpath(str(folder))
+        key = os.path.normcase(folder)
+        next_recent = [folder]
+        for recent in self._recent_dialog_dirs:
+            if os.path.normcase(os.path.normpath(str(recent))) != key:
+                next_recent.append(recent)
+            if len(next_recent) >= 5:
+                break
+        self._recent_dialog_dirs = next_recent[:5]
+        self._browse_settings.setValue("browse/recentDirs", self._recent_dialog_dirs)
+
     def _remember_dialog_dir(self, selected_path, is_directory=False):
         if not selected_path:
             return
         if is_directory:
             self._last_dialog_dir = selected_path
+            self._remember_recent_dialog_dir(selected_path)
             return
         directory = os.path.dirname(selected_path)
         if directory:
             self._last_dialog_dir = directory
+            self._remember_recent_dialog_dir(directory)
 
     def _select_existing_files(self, title, allowed_suffixes=None):
         start_dir = self._dialog_start_dir()
-        dialog = NameOnlyFileDialog(self, title, start_dir, mode="files", allowed_suffixes=allowed_suffixes)
+        dialog = NameOnlyFileDialog(
+            self,
+            title,
+            start_dir,
+            mode="files",
+            allowed_suffixes=allowed_suffixes,
+            recent_dirs=self._recent_dialog_dirs,
+        )
         if dialog.exec() != QDialog.Accepted:
             return []
         file_paths = dialog.selected_paths()
@@ -1056,7 +1159,13 @@ class MainWindow(QMainWindow):
 
     def _select_existing_directory(self, title):
         start_dir = self._dialog_start_dir()
-        dialog = NameOnlyFileDialog(self, title, start_dir, mode="directory")
+        dialog = NameOnlyFileDialog(
+            self,
+            title,
+            start_dir,
+            mode="directory",
+            recent_dirs=self._recent_dialog_dirs,
+        )
         if dialog.exec() != QDialog.Accepted:
             return ""
         folder_paths = dialog.selected_paths()
@@ -1075,6 +1184,7 @@ class MainWindow(QMainWindow):
             mode="save",
             allowed_suffixes=suffixes,
             default_suffix=default_suffix,
+            recent_dirs=self._recent_dialog_dirs,
         )
         if dialog.exec() != QDialog.Accepted:
             return ""

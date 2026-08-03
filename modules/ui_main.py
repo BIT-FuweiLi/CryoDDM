@@ -2397,7 +2397,7 @@ class Ui_MainWindow(object):
         self.btn_message.setText(QCoreApplication.translate("MainWindow", u"Message", None))
         self.btn_print.setText(QCoreApplication.translate("MainWindow", u"Print", None))
         self.btn_logout.setText(QCoreApplication.translate("MainWindow", u"Logout", None))
-        self.creditsLabel.setText(QCoreApplication.translate("MainWindow", u"By: Chen", None))
-        self.version.setText(QCoreApplication.translate("MainWindow", u"v0.0.1", None))
+        self.creditsLabel.setText(QCoreApplication.translate("MainWindow", u"By: Lu", None))
+        self.version.setText(QCoreApplication.translate("MainWindow", u"v0.0.2", None))
     # retranslateUi
 
