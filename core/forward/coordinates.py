@@ -18,9 +18,12 @@ def normalize_origin(origin):
 
 
 def resolve_coordinate_origin(coordinate_path, requested="auto"):
+    # "auto" means top-left (y = MRC row index) for every file. CryoDDM picking, RELION, IMOD,
+    # raw cryoSPARC .cs coordinates and the cs2star page's invert.star all use it. Only STARs
+    # written by pyem csparc2star without --inverty store y = H - row and need "bottom-left".
     value = (requested or "auto").strip().lower().replace("_", "-")
     if value == "auto":
-        return "bottom-left" if os.path.basename(os.fspath(coordinate_path)).lower() == "invert.star" else "top-left"
+        return "top-left"
     return normalize_origin(value)
 
 

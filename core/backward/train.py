@@ -53,7 +53,44 @@ def validate_training_data(preprocess_path):
             raise ValueError(f"{prefix} input and label stacks must contain the same number of images")
         if inputs.shape[1:] != labels.shape[1:]:
             raise ValueError(f"{prefix} input and label patch shapes must match")
+    check_forward_layout(loaded)
     return loaded
+
+
+LAYOUT_CHECK_SAMPLES = 64
+
+
+def _same_images(first, second):
+    count = min(len(first), len(second), LAYOUT_CHECK_SAMPLES)
+    return np.array_equal(np.asarray(first[:count]), np.asarray(second[:count]))
+
+
+def check_forward_layout(loaded):
+    """
+    Forward data keeps the source_code4 layout: input.mrcs is the cleaner state x_t and
+    label.mrcs the noisier state x_(t+1). In that layout val/input.mrcs is the last block of
+    s2/label.mrcs. The reversed layout (noisier stack in input.mrcs, as written by CryoDDM v2
+    9ee4f6b and the Web V6 forward) instead repeats val/label.mrcs as the first block of
+    s2/input.mrcs. Reject the reversed layout, which would silently train clean -> noisy.
+    """
+    s2_input, s2_label = loaded["s2_input"], loaded["s2_label"]
+    val_input, val_label = loaded["val_input"], loaded["val_label"]
+    block = len(val_input)
+    if len(s2_input) % block != 0 or s2_input.shape[1:] != val_input.shape[1:]:
+        return
+    legacy = _same_images(val_input, s2_label[-block:])
+    reversed_layout = _same_images(val_label, s2_input[:block])
+    if reversed_layout and not legacy:
+        raise ValueError(
+            "s2/input.mrcs holds the noisier diffusion states (reversed forward layout). train.py expects the "
+            "source_code4 layout (input.mrcs = cleaner x_t, label.mrcs = noisier x_(t+1)); "
+            "regenerate the training data with core/forward/forward.py from this version."
+        )
+
+
+def denoising_dataset(cleaner, noisier):
+    # 网络输入是更噪的一步，目标是更干净的一步：x_(t+1) -> x_t
+    return util_self.CustomDataset(noisier, cleaner)
 
 
 def set_random_seed(seed):
@@ -115,7 +152,7 @@ def main(preprocess_path, model_save_path, gpus, batch_size, log_path, epochs=10
     log_file.write('reading data from '+step2_path+'\n')
     s2_input_data = datasets["s2_input"]
     s2_label_data = datasets["s2_label"]
-    s2_train_dataset = util_self.CustomDataset(s2_input_data, s2_label_data)
+    s2_train_dataset = denoising_dataset(cleaner=s2_input_data, noisier=s2_label_data)
     s2_train_dataloader = torch.utils.data.DataLoader(s2_train_dataset, batch_size=batch_size, shuffle=True)
 
     step3_path = os.path.join(preprocess_path, 's3')
@@ -130,7 +167,7 @@ def main(preprocess_path, model_save_path, gpus, batch_size, log_path, epochs=10
     log_file.write('reading data from '+val_path+'\n')
     val_input_data = datasets["val_input"]
     val_label_data = datasets["val_label"]
-    val_dataset = util_self.CustomDataset(val_input_data, val_label_data)
+    val_dataset = denoising_dataset(cleaner=val_input_data, noisier=val_label_data)
     val_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=2*batch_size, shuffle=False)
 
     # 设置 GPU

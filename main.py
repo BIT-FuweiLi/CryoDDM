@@ -33,11 +33,33 @@ import time
 # IMPORT / GUI AND MODULES AND WIDGETS
 from modules import *
 from widgets import *
+from cryoddm import __version__
 
 os.environ["QT_FONT_DPI"] = "96"  # FIX Problem for High DPI and Scale above 100%
 
 # 全局 widgets 引用（由 Ui_MainWindow 初始化）
 widgets = None
+
+# Forward 页 "Y origin at bottom-left" 选项旁 (?) 图标的说明
+PARTICLE_ORIGIN_HELP = (
+    "<b>Y origin at bottom-left（Y 轴翻转）</b><br>"
+    "勾选后，forward 会把每个颗粒坐标的 y 换成 <i>H − y</i>（H = micrograph 高度）再裁剪；"
+    "不勾选时 y 直接当作 MRC 图像的行号。<br><br>"
+    "<b>✔ 需要勾选</b>"
+    "<ul style='margin-top:2px'>"
+    "<li>cryoSPARC 用 pyem <code>csparc2star.py</code> 直接导出、没有加 <code>--inverty</code> 的 STAR"
+    "（例如 cs2star 页面的中间文件 particles_relion.star、cleaned_particles_relion.star）</li>"
+    "</ul>"
+    "<b>✘ 不要勾选（默认）</b>"
+    "<ul style='margin-top:2px'>"
+    "<li>CryoDDM 自己点选保存的坐标</li>"
+    "<li>RELION 的 STAR（ManualPick / AutoPick / Extract）</li>"
+    "<li>CryoDDM cs2star 页面生成的 <b>invert.star</b>（y_value 填 micrograph 高度）</li>"
+    "<li>pyem 加了 <code>--inverty</code> 导出的 STAR</li>"
+    "<li>IMOD <code>model2point</code> 导出的坐标（先整理成 “文件名 x y”）</li>"
+    "</ul>"
+    "拿不准时：先用少量颗粒跑一次 forward，检查 <code>s1/particles.mrcs</code> 里颗粒是否位于图块中心。"
+)
 
 
 # -------------------- Add this runnable and signals class near other class defs (above MainWindow) --------------------
@@ -588,6 +610,9 @@ class MainWindow(QMainWindow):
         self.ui.setupUi(self)
         global widgets
         widgets = self.ui
+        widgets.version.setText(f"v{__version__}")
+        # invert.star 需要用 micrograph 的高度（Y 方向像素数）把 pyem 翻转过的 y 还原
+        widgets.line_cs_y.setPlaceholderText("micrograph height in pixels (Y size)")
 
         # 内部 state
         self.coordinates = {}
@@ -661,6 +686,36 @@ class MainWindow(QMainWindow):
         self.ui.comboBox_config.addItem("配置 2")
         self.ui.comboBox_config.addItem("自定义")
         self.ui.comboBox_config.currentIndexChanged.connect(self.toggle_add_noise)
+
+        # 粒子坐标原点：勾选后 forward 按 y -> H - y 翻转再裁剪；默认不勾选（y 就是 MRC 行号）
+        self.widget_particle_origin = QWidget(self.ui.forward)
+        self.widget_particle_origin.setObjectName("widget_particle_origin")
+        self.widget_particle_origin.setGeometry(QRect(190, 478, 820, 24))
+        origin_layout = QHBoxLayout(self.widget_particle_origin)
+        origin_layout.setContentsMargins(0, 0, 0, 0)
+        origin_layout.setSpacing(8)
+        self.checkBox_flip_particle_y = QCheckBox("Y origin at bottom-left (flip y -> H - y)", self.widget_particle_origin)
+        self.checkBox_flip_particle_y.setObjectName("checkBox_flip_particle_y")
+        self.checkBox_flip_particle_y.setToolTip(PARTICLE_ORIGIN_HELP)
+        self.label_particle_origin_help = QLabel("?", self.widget_particle_origin)
+        self.label_particle_origin_help.setObjectName("label_particle_origin_help")
+        self.label_particle_origin_help.setFixedSize(18, 18)
+        self.label_particle_origin_help.setAlignment(Qt.AlignCenter)
+        self.label_particle_origin_help.setCursor(Qt.WhatsThisCursor)
+        # 全局 QToolTip 背景半透明，长说明叠在页面上难读，这里用不透明背景
+        opaque_tooltip = (
+            "QToolTip { color: #ffffff; background-color: rgb(33, 37, 43);"
+            " border: 1px solid rgb(189, 147, 249); padding: 6px; }"
+        )
+        self.checkBox_flip_particle_y.setStyleSheet(opaque_tooltip)
+        self.label_particle_origin_help.setStyleSheet(
+            "QLabel { border: 1px solid rgb(189, 147, 249); border-radius: 9px;"
+            " color: rgb(189, 147, 249); font-weight: bold; font-size: 11px; }" + opaque_tooltip
+        )
+        self.label_particle_origin_help.setToolTip(PARTICLE_ORIGIN_HELP)
+        origin_layout.addWidget(self.checkBox_flip_particle_y)
+        origin_layout.addWidget(self.label_particle_origin_help)
+        origin_layout.addStretch(1)
 
         self.ui.label_6.setVisible(False)
         self.ui.label_5.setVisible(False)
@@ -1736,7 +1791,9 @@ class MainWindow(QMainWindow):
                 "-op", out_path,
                 "--beta", beta,
                 "--total_steps", total_steps,
-                "--start", start
+                "--start", start,
+                "--particle_coord_origin",
+                "bottom-left" if self.checkBox_flip_particle_y.isChecked() else "top-left",
             ]
             print(f"执行命令: {' '.join(command)}")
             self.script_runner = ScriptRunner(command)

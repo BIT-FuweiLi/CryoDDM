@@ -147,6 +147,79 @@ class TrainingTests(unittest.TestCase):
                     train.main(data_dir, model_dir, "0", 1, log_dir, epochs=1, seed=42)
             self.assertFalse((model_dir / "1.pth").exists())
 
+    def _make_layered_dataset(self, root, s2_input, s2_label, val_input, val_label):
+        shape = (2, 8, 8)
+        self._write_stack(root / "s1" / "particles.mrcs", np.zeros(shape))
+        self._write_stack(root / "s2" / "input.mrcs", np.full(shape, s2_input))
+        self._write_stack(root / "s2" / "label.mrcs", np.full(shape, s2_label))
+        self._write_stack(root / "s3" / "noise.mrcs", np.full(shape, 5.0))
+        self._write_stack(root / "val" / "input.mrcs", np.full(shape, val_input))
+        self._write_stack(root / "val" / "label.mrcs", np.full(shape, val_label))
+
+    def test_denoising_dataset_feeds_noisier_image_and_targets_cleaner(self):
+        cleaner = np.zeros((1, 4, 4), dtype=np.float32)
+        noisier = np.ones((1, 4, 4), dtype=np.float32)
+        network_input, target = train.denoising_dataset(cleaner=cleaner, noisier=noisier)[0]
+        self.assertTrue(torch.equal(network_input, torch.ones(4, 4)))
+        self.assertTrue(torch.equal(target, torch.zeros(4, 4)))
+
+    def test_training_feeds_label_stack_and_never_input_stack_to_network(self):
+        seen = set()
+
+        class RecordingModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layer = torch.nn.Conv2d(1, 1, 1)
+
+            def forward(self, value):
+                seen.update(float(item) for item in torch.unique(value))
+                return self.layer(value)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            model_dir = root / "models"
+            model_dir.mkdir()
+            # s1 = 0, s2/val input.mrcs (cleaner) = 1, s2/val label.mrcs (noisier) = 2, s3 = 5
+            self._make_layered_dataset(data_dir, 1.0, 2.0, 1.0, 2.0)
+            with mock.patch.object(train.unet2d, "UDenoiseNet", RecordingModel), \
+                    mock.patch.object(train.torch, "save", side_effect=lambda _value, path: Path(path).write_bytes(b"model")), \
+                    mock.patch.object(train.torch.cuda, "is_available", return_value=False):
+                train.main(data_dir, model_dir, "0", 1, root / "logs", epochs=1, seed=42)
+        self.assertEqual(seen, {0.0, 2.0, 5.0})
+
+    def _write_forward_output(self, root, particles, noise, s2_input, s2_label, val_input, val_label):
+        self._write_stack(root / "s1" / "particles.mrcs", particles)
+        self._write_stack(root / "s2" / "input.mrcs", s2_input)
+        self._write_stack(root / "s2" / "label.mrcs", s2_label)
+        self._write_stack(root / "s3" / "noise.mrcs", noise)
+        self._write_stack(root / "val" / "input.mrcs", val_input)
+        self._write_stack(root / "val" / "label.mrcs", val_label)
+
+    def test_forward_layout_check_accepts_this_version_and_rejects_reversed_layout(self):
+        sys.path.insert(0, str(ROOT / "core" / "forward"))
+        forward = importlib.import_module("forward")
+        rng = np.random.default_rng(0)
+        particles = rng.normal(size=(6, 16, 16)).astype(np.float32)
+        noise = rng.normal(size=(6, 16, 16)).astype(np.float32)
+        states = forward.generate_diffusion_states(particles, noise, beta=0.1288, total_steps=5)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_forward_output(root, particles, noise, *forward.build_training_pairs(states, start=2))
+            train.validate_training_data(root)
+        # Layout written by v2 9ee4f6b / Web V6: noisier states in input.mrcs, blocks newest first.
+        reversed_layout = (
+            np.vstack([states[4], states[3], states[2]]),
+            np.vstack([states[3], states[2], states[1]]),
+            states[5],
+            states[4],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_forward_output(root, particles, noise, *reversed_layout)
+            with self.assertRaisesRegex(ValueError, "reversed forward layout"):
+                train.validate_training_data(root)
+
 
 if __name__ == "__main__":
     unittest.main()

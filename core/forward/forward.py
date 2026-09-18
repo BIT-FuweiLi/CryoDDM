@@ -1,6 +1,8 @@
+import functools
 import numpy as np
 import mrcfile as mf
 import os
+import re
 from tqdm import *
 import time
 import argparse
@@ -26,12 +28,45 @@ def _jitter(shape, jitter_fraction):
     return 0 if amount <= 0 else np.random.randint(-amount, amount)
 
 
+CRYOSPARC_UID_PREFIX = re.compile(r"^\d+_")
+
+
+@functools.lru_cache(maxsize=8)
+def _uid_prefixed_files(data_path):
+    index = {}
+    for name in os.listdir(data_path):
+        if CRYOSPARC_UID_PREFIX.match(name):
+            index.setdefault(CRYOSPARC_UID_PREFIX.sub("", name, count=1), []).append(name)
+    return index
+
+
+def resolve_micrograph_path(data_path, filename):
+    """
+    Find the micrograph for a coordinate row. Coordinates picked in CryoDDM use the file name
+    as it is on disk; STARs imported from cryoSPARC usually carry a UID prefix such as
+    "006642101566427281036_" that the local micrograph does not, or the other way round.
+    Exact names win, so a micrograph whose own name starts with digits is never renamed.
+    """
+    data_path = os.fspath(data_path)
+    basename = os.path.basename(filename)
+    exact = os.path.join(data_path, basename)
+    if os.path.exists(exact):
+        return exact
+    stripped = CRYOSPARC_UID_PREFIX.sub("", basename, count=1)
+    if stripped != basename and os.path.exists(os.path.join(data_path, stripped)):
+        return os.path.join(data_path, stripped)
+    prefixed = _uid_prefixed_files(data_path).get(stripped, []) if os.path.isdir(data_path) else []
+    if len(prefixed) == 1:
+        return os.path.join(data_path, prefixed[0])
+    if len(prefixed) > 1:
+        raise ValueError(f"Micrograph {basename} matches several UID-prefixed files in {data_path}: {sorted(prefixed)}")
+    raise FileNotFoundError(f"MRC file not found: {exact} (also tried without/with a cryoSPARC UID prefix)")
+
+
 def _read_mrc(data_path, filename, cache, max_cache_size=10):
     basename = os.path.basename(filename)
     if basename not in cache:
-        path = os.path.join(data_path, basename)
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"MRC file not found: {path}")
+        path = resolve_micrograph_path(data_path, basename)
         data = mf.read(path)
         if data.ndim != 2:
             raise ValueError(f"Expected a 2D MRC image at {path}, got shape {data.shape}")
@@ -134,19 +169,23 @@ def generate_diffusion_states(particles, noise, beta, total_steps):
 
 
 def build_training_pairs(states, start):
+    """
+    Keep the source_code4 file layout: input.mrcs holds the cleaner state x_t and
+    label.mrcs the next, noisier state x_{t+1}. train.py swaps them so the network
+    learns x_{t+1} -> x_t.
+    """
     total_steps = len(states) - 1
     if total_steps < 2:
         raise ValueError("At least two generated diffusion steps are required")
     if start < 1 or start >= total_steps:
         raise ValueError("start must satisfy 1 <= start < total_steps")
     saved = states[start - 1:]
-    train_pairs = [(saved[index + 1], saved[index]) for index in range(len(saved) - 2)]
-    train_pairs.reverse()
+    train_pairs = [(saved[index], saved[index + 1]) for index in range(len(saved) - 2)]
     if not train_pairs:
         raise ValueError("The selected start/total_steps combination produces no S2 training pairs")
     train_input = np.vstack([pair[0] for pair in train_pairs])
     train_label = np.vstack([pair[1] for pair in train_pairs])
-    return train_input, train_label, np.asarray(saved[-1]), np.asarray(saved[-2])
+    return train_input, train_label, np.asarray(saved[-2]), np.asarray(saved[-1])
 
 def get_diffuse_dataset_3step_compress_new(org_patch, noise_path, coordinate, 
                     shape, padding, save_path, log_file, isnormal=True, beta=0.1, total_steps=6, start=2,
@@ -210,7 +249,9 @@ def build_parser():
     parser.add_argument('--beta', type=float, default=0.1288, help='Beta value for diffusion')
     parser.add_argument('--total_steps', type=int, default=5, help='Total diffusion steps')
     parser.add_argument('--start', type=int, default=2, help='Start step for saving data')
-    parser.add_argument('--particle_coord_origin', choices=('auto', 'top-left', 'bottom-left'), default='auto')
+    parser.add_argument('--particle_coord_origin', choices=('auto', 'top-left', 'bottom-left'), default='auto',
+                        help='top-left (auto): y is the MRC row (CryoDDM, RELION, IMOD, cs2star invert.star); '
+                             'bottom-left: y = H - row (pyem csparc2star output without --inverty)')
     parser.add_argument('--noise_coord_origin', choices=('top-left', 'bottom-left'), default='top-left')
     parser.add_argument('--seed', type=int, default=42)
     return parser

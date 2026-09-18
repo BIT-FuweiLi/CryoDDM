@@ -60,6 +60,16 @@ def estimate_mrc_memory(path):
         return max(int(data.nbytes), int(np.prod(data.shape)) * 4)
 
 
+def prediction_padding(aim_shape):
+    # Each crop keeps `padding` pixels of context on both sides. With a 64 px margin a 128 px window
+    # (particle diameter <= 85 px) leaves no centre, so small windows use a quarter of the window,
+    # which matches source_code4's 32 px margin for 128 px crops.
+    padding = min(64, aim_shape // 4)
+    if aim_shape - 2 * padding < 1:
+        raise ValueError(f"Prediction window {aim_shape} is too small for tiled inference")
+    return padding
+
+
 def main(test_raw_path, test_out_path, test_model_path, gpu, aim_shape, log_dir, batch_size=16):
     test_raw_path = os.fspath(test_raw_path)
     test_out_path = os.fspath(test_out_path)
@@ -84,8 +94,9 @@ def main(test_raw_path, test_out_path, test_model_path, gpu, aim_shape, log_dir,
         )
         log_file.write(f"Using {len(file_batches)} MRC batch(es), max 64 files and 20% memory budget\n")
 
-        padding = 64
+        padding = prediction_padding(aim_shape)
         center_shape = [aim_shape-2*padding, aim_shape-2*padding]
+        log_file.write(f"Prediction window {aim_shape}, padding {padding}\n")
         device = torch.device('cuda:'+gpu)
         model = torch.load(test_model_path, map_location=device)
         model.eval()

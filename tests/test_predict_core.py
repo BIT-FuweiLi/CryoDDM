@@ -82,6 +82,28 @@ class PredictTests(unittest.TestCase):
             self.assertEqual(mrcfile.read(output / "a.mrc").shape, (8, 8))
             self.assertEqual(mrcfile.read(output / "b.mrc").shape, (12, 10))
 
+    def test_padding_leaves_a_centre_for_every_window_size(self):
+        self.assertEqual(predict.prediction_padding(128), 32)
+        self.assertEqual(predict.prediction_padding(256), 64)
+        self.assertEqual(predict.prediction_padding(384), 64)
+
+    def test_small_particles_128_window_predicts_without_error(self):
+        # particle diameter <= 85 px gives a 128 px window; padding 64 used to divide by zero
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw, output, logs = root / "raw", root / "output", root / "logs"
+            for folder in (raw, output, logs):
+                folder.mkdir()
+            image = np.random.default_rng(0).normal(size=(300, 200)).astype(np.float32)
+            mrcfile.write(raw / "a.mrc", image, overwrite=True)
+            identity = torch.nn.Identity()
+            with mock.patch.object(predict.torch, "load", return_value=identity), \
+                    mock.patch.object(predict.torch, "device", return_value=torch.device("cpu")):
+                predict.main(raw, output, root / "model.pth", "0", 128, logs, batch_size=4)
+            result = mrcfile.read(output / "a.mrc")
+            self.assertEqual(result.shape, (300, 200))
+            np.testing.assert_allclose(result, predict.normal(image), atol=1e-6)
+
 
 if __name__ == "__main__":
     unittest.main()

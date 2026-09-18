@@ -35,7 +35,7 @@
 
 ## 📥 安装指南
 
-当前推荐从 GitHub 的 `v2` 分支直接安装。训练和推理仍需要本机具备可用的 NVIDIA/CUDA 环境。
+当前推荐安装 GitHub 上的 V2.0 正式版（tag `v2.0`）。训练和推理仍需要本机具备可用的 NVIDIA/CUDA 环境。
 
 1.  **创建环境：**
     ```bash
@@ -44,9 +44,9 @@
     python -m pip install -U pip setuptools wheel
     ```
 
-2.  **从 GitHub v2 分支安装：**
+2.  **安装 V2.0 正式版：**
     ```bash
-    pip install "git+https://github.com/BIT-FuweiLi/CryoDDM.git@v2"
+    pip install "git+https://github.com/BIT-FuweiLi/CryoDDM.git@v2.0"
     ```
 
 3.  **启动软件：**
@@ -61,11 +61,11 @@ conda activate cryoddm
 cryoddm
 ```
 
-如果需要更新到 `v2` 分支最新代码：
+如果需要更新到 `main` 分支最新代码：
 
 ```bash
 conda activate cryoddm
-pip install --upgrade --force-reinstall --no-cache-dir "git+https://github.com/BIT-FuweiLi/CryoDDM.git@v2"
+pip install --upgrade --force-reinstall --no-cache-dir "git+https://github.com/BIT-FuweiLi/CryoDDM.git@main"
 cryoddm
 ```
 
@@ -97,6 +97,8 @@ csparc2star.py --help
     *   设置 `Particle_diameter` (像素单位)。
     *   选择 `Add_noise_parameter` 配置 (例如 Beta=0.1288, Steps=5)。这些参数控制正向扩散的调度。
     *   勾选 "Use other noise" 并加载第一步生成的 `noise_coordinates.txt`。
+    *   `Y origin at bottom-left`（旁边的 (?) 图标有说明）：只有 cryoSPARC 经 pyem `csparc2star.py` 直接导出、未加 `--inverty` 的 STAR 需要勾选。CryoDDM 自己点选的坐标、RELION 的 STAR、cs2star 页面生成的 `invert.star`、IMOD `model2point` 坐标都**不要**勾选。
+    *   坐标文件里的 micrograph 名带不带 cryoSPARC 的 UID 前缀（如 `006642101566427281036_`）都可以，会自动匹配到本地文件。
 *   **执行**：点击 "Execute"，在 `Out_path` 生成训练数据集。
 *   **目标**：模拟正向扩散过程。软件生成成对的训练数据：$s_1$ (纯信号)、$s_2$ (混合态) 和 $s_3$ (纯噪声)，建立自监督学习的基础。
 
@@ -120,7 +122,7 @@ csparc2star.py --help
 *   **功能**：将 CryoSPARC 导出的颗粒数据 (`.cs`) 转换为 RELION 兼容格式 (`.star`) 的实用工具。
 *   **设置**：
     *   `Project_path`: CryoSPARC 作业目录路径。
-    *   `y_value`: CryoSPARC 中使用的图像大小（第一维）。
+    *   `y_value`: CryoSPARC 中 micrograph 的高度，即 Y 方向像素数（第一维）。非正方形图像不要填成宽度。
     *   `Num_projects`: 连续处理的作业数量。
 *   **输出**：生成 `particles_relion.star`、`cleaned_particles_relion.star` 以及 `Invert.star`（已翻转 Y 轴坐标以兼容 Relion）。
 
@@ -170,7 +172,7 @@ Unlike conventional denoising methods, CryoDDM introduces **Residual Structural 
 
 ## 📥 Installation
 
-The recommended path is installing directly from the `v2` branch on GitHub. Training and inference still require a working NVIDIA/CUDA setup on the target machine.
+The recommended path is installing the V2.0 release (tag `v2.0`) from GitHub. Training and inference still require a working NVIDIA/CUDA setup on the target machine.
 
 1.  **Create the environment:**
     ```bash
@@ -179,9 +181,9 @@ The recommended path is installing directly from the `v2` branch on GitHub. Trai
     python -m pip install -U pip setuptools wheel
     ```
 
-2.  **Install from the GitHub v2 branch:**
+2.  **Install the V2.0 release:**
     ```bash
-    pip install "git+https://github.com/BIT-FuweiLi/CryoDDM.git@v2"
+    pip install "git+https://github.com/BIT-FuweiLi/CryoDDM.git@v2.0"
     ```
 
 3.  **Run the software:**
@@ -196,11 +198,11 @@ conda activate cryoddm
 cryoddm
 ```
 
-To update to the latest code on the `v2` branch:
+To update to the latest code on the `main` branch:
 
 ```bash
 conda activate cryoddm
-pip install --upgrade --force-reinstall --no-cache-dir "git+https://github.com/BIT-FuweiLi/CryoDDM.git@v2"
+pip install --upgrade --force-reinstall --no-cache-dir "git+https://github.com/BIT-FuweiLi/CryoDDM.git@main"
 cryoddm
 ```
 
@@ -232,6 +234,8 @@ csparc2star.py --help
     *   Set `Particle_diameter` (in pixels).
     *   Choose `Add_noise_parameter` config (e.g., Beta=0.1288, Steps=5). These parameters control the forward diffusion schedule.
     *   Check "Use other noise" to load the `noise_coordinates.txt` generated in Step 1.
+    *   `Y origin at bottom-left` (hover the (?) icon for help): check it only for STAR files written by pyem `csparc2star.py` without `--inverty`. Leave it unchecked for CryoDDM-picked coordinates, RELION STAR files, the cs2star tab's `invert.star`, and IMOD `model2point` coordinates.
+    *   Micrograph names may carry a cryoSPARC UID prefix (e.g. `006642101566427281036_`) or not; they are matched to the local files either way.
 *   **Execute**: Click "Execute" to generate the training dataset in the `Out_path`.
 *   **Goal**: Simulate the forward diffusion process. The software generates paired training data: $s_1$ (Signal), $s_2$ (Mixed state), and $s_3$ (Pure Noise), creating a self-supervised learning foundation.
 
@@ -255,7 +259,7 @@ csparc2star.py --help
 *   **Function**: A utility tool to convert CryoSPARC exported particle data (`.cs`) into RELION-compatible format (`.star`).
 *   **Settings**: 
     *   `Project_path`: Path to the CryoSPARC job directory.
-    *   `y_value`: The image size (first dimension) used in CryoSPARC.
+    *   `y_value`: The micrograph height in CryoSPARC, i.e. the number of pixels along Y (first dimension). For non-square micrographs do not enter the width.
     *   `Num_projects`: Number of sequential jobs to process.
 *   **Output**: Generates `particles_relion.star`, `cleaned_particles_relion.star`, and `Invert.star` (with Y-axis coordinates inverted for compatibility).
 
