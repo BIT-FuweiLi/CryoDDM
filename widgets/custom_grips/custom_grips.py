@@ -30,7 +30,7 @@ class CustomGrip(QWidget):
         # SHOW TOP GRIP
         if position == Qt.TopEdge:
             self.wi.top(self)
-            self.setGeometry(0, 0, self.parent.width(), 10)
+            self.setGeometry(10, 0, max(0, self.parent.width() - 20), 10)
             self.setMaximumHeight(10)
 
             # GRIPS
@@ -56,7 +56,7 @@ class CustomGrip(QWidget):
         # SHOW BOTTOM GRIP
         elif position == Qt.BottomEdge:
             self.wi.bottom(self)
-            self.setGeometry(0, self.parent.height() - 10, self.parent.width(), 10)
+            self.setGeometry(10, max(0, self.parent.height() - 10), max(0, self.parent.width() - 20), 10)
             self.setMaximumHeight(10)
 
             # GRIPS
@@ -80,7 +80,7 @@ class CustomGrip(QWidget):
         # SHOW LEFT GRIP
         elif position == Qt.LeftEdge:
             self.wi.left(self)
-            self.setGeometry(0, 10, 10, self.parent.height())
+            self.setGeometry(0, 10, 10, max(0, self.parent.height() - 20))
             self.setMaximumWidth(10)
 
             # RESIZE LEFT
@@ -100,7 +100,7 @@ class CustomGrip(QWidget):
         # RESIZE RIGHT
         elif position == Qt.RightEdge:
             self.wi.right(self)
-            self.setGeometry(self.parent.width() - 10, 10, 10, self.parent.height())
+            self.setGeometry(max(0, self.parent.width() - 10), 10, 10, max(0, self.parent.height() - 20))
             self.setMaximumWidth(10)
 
             def resize_right(event):
@@ -115,6 +115,93 @@ class CustomGrip(QWidget):
                 self.wi.rightgrip.setStyleSheet("background: transparent")
 
 
+        self._edge = position
+        self._resize_start_pos = None
+        self._resize_start_geo = None
+        self._using_system_resize = False
+        self._bind_resize_handlers(position)
+
+    def _event_global_pos(self, event):
+        try:
+            return event.globalPosition().toPoint()
+        except Exception:
+            return event.globalPos()
+
+    def _bind_resize_handlers(self, position):
+        targets = {
+            Qt.TopEdge: getattr(self.wi, "top", None),
+            Qt.BottomEdge: getattr(self.wi, "bottom", None),
+            Qt.LeftEdge: getattr(self.wi, "leftgrip", None),
+            Qt.RightEdge: getattr(self.wi, "rightgrip", None),
+        }
+        target = targets.get(position)
+        if target is None:
+            return
+        target.mousePressEvent = self._resize_press
+        target.mouseMoveEvent = self._resize_move
+        target.mouseReleaseEvent = self._resize_release
+
+    def _resize_press(self, event):
+        if event.button() != Qt.LeftButton:
+            event.ignore()
+            return
+
+        # Prefer the platform resize operation.  On Windows this lets the
+        # compositor redraw the frameless window atomically, avoiding the
+        # duplicate/layered edge artefact produced by repeated setGeometry()
+        # calls during a drag.  Keep the existing geometry code as a fallback
+        # for platforms where startSystemResize is unavailable.
+        self._using_system_resize = False
+        try:
+            handle = self.parent.windowHandle()
+            if handle is not None and handle.startSystemResize(self._edge):
+                self._using_system_resize = True
+                event.accept()
+                return
+        except Exception:
+            pass
+
+        self._resize_start_pos = self._event_global_pos(event)
+        self._resize_start_geo = self.parent.geometry()
+        event.accept()
+
+    def _resize_move(self, event):
+        if self._using_system_resize:
+            event.accept()
+            return
+        if self._resize_start_pos is None or self._resize_start_geo is None:
+            self._resize_press(event)
+            return
+
+        pos = self._event_global_pos(event)
+        delta = pos - self._resize_start_pos
+        geo = self._resize_start_geo
+        min_w = self.parent.minimumWidth()
+        min_h = self.parent.minimumHeight()
+        x, y, width, height = geo.x(), geo.y(), geo.width(), geo.height()
+
+        if self._edge == Qt.LeftEdge:
+            new_width = max(min_w, width - delta.x())
+            x = geo.x() + width - new_width
+            width = new_width
+        elif self._edge == Qt.RightEdge:
+            width = max(min_w, width + delta.x())
+        elif self._edge == Qt.TopEdge:
+            new_height = max(min_h, height - delta.y())
+            y = geo.y() + height - new_height
+            height = new_height
+        elif self._edge == Qt.BottomEdge:
+            height = max(min_h, height + delta.y())
+
+        self.parent.setGeometry(x, y, width, height)
+        event.accept()
+
+    def _resize_release(self, event):
+        self._using_system_resize = False
+        self._resize_start_pos = None
+        self._resize_start_geo = None
+        event.accept()
+
     def mouseReleaseEvent(self, event):
         self.mousePos = None
 
@@ -126,10 +213,10 @@ class CustomGrip(QWidget):
             self.wi.container_bottom.setGeometry(0, 0, self.width(), 10)
 
         elif hasattr(self.wi, 'leftgrip'):
-            self.wi.leftgrip.setGeometry(0, 0, 10, self.height() - 20)
+            self.wi.leftgrip.setGeometry(0, 0, 10, self.height())
 
         elif hasattr(self.wi, 'rightgrip'):
-            self.wi.rightgrip.setGeometry(0, 0, 10, self.height() - 20)
+            self.wi.rightgrip.setGeometry(0, 0, 10, self.height())
 
 class Widgets(object):
     def top(self, Form):
@@ -217,7 +304,7 @@ class Widgets(object):
             Form.setObjectName(u"Form")
         self.leftgrip = QFrame(Form)
         self.leftgrip.setObjectName(u"left")
-        self.leftgrip.setGeometry(QRect(0, 10, 10, 480))
+        self.leftgrip.setGeometry(QRect(0, 0, 10, 480))
         self.leftgrip.setMinimumSize(QSize(10, 0))
         self.leftgrip.setCursor(QCursor(Qt.SizeHorCursor))
         self.leftgrip.setStyleSheet(u"background-color: rgb(255, 121, 198);")
@@ -227,7 +314,6 @@ class Widgets(object):
     def right(self, Form):
         if not Form.objectName():
             Form.setObjectName(u"Form")
-        Form.resize(500, 500)
         self.rightgrip = QFrame(Form)
         self.rightgrip.setObjectName(u"right")
         self.rightgrip.setGeometry(QRect(0, 0, 10, 500))

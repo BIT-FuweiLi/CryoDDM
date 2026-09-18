@@ -14,16 +14,19 @@
 #
 # ///////////////////////////////////////////////////////////////
 
-# MAIN FILE
-# ///////////////////////////////////////////////////////////////
-from main import *
+from PySide6.QtCore import QEasingCurve, QEvent, QParallelAnimationGroup, QPropertyAnimation, QTimer, Qt
+from PySide6.QtGui import QIcon
+from PySide6.QtWidgets import QPushButton, QSizeGrip
+
+from .app_settings import Settings
+from widgets import CustomGrip
 
 # GLOBALS
 # ///////////////////////////////////////////////////////////////
 GLOBAL_STATE = False
 GLOBAL_TITLE_BAR = True
 
-class UIFunctions(MainWindow):
+class UIFunctions:
     # MAXIMIZE/RESTORE
     # ///////////////////////////////////////////////////////////////
     def maximize_restore(self):
@@ -43,7 +46,6 @@ class UIFunctions(MainWindow):
         else:
             GLOBAL_STATE = False
             self.showNormal()
-            self.resize(self.width()+1, self.height()+1)
             self.ui.appMargins.setContentsMargins(10, 10, 10, 10)
             self.ui.maximizeRestoreAppBtn.setToolTip("Maximize")
             self.ui.maximizeRestoreAppBtn.setIcon(QIcon(u":/icons/images/icons/icon_maximize.png"))
@@ -214,6 +216,12 @@ class UIFunctions(MainWindow):
     # START - GUI DEFINITIONS
     # ///////////////////////////////////////////////////////////////
     def uiDefinitions(self):
+        def event_global_pos(event):
+            try:
+                return event.globalPosition().toPoint()
+            except Exception:
+                return event.globalPos()
+
         def dobleClickMaximizeRestore(event):
             # IF DOUBLE CLICK CHANGE STATUS
             if event.type() == QEvent.MouseButtonDblClick:
@@ -223,19 +231,45 @@ class UIFunctions(MainWindow):
         if Settings.ENABLE_CUSTOM_TITLE_BAR:
             #STANDARD TITLE BAR
             self.setWindowFlags(Qt.FramelessWindowHint)
-            self.setAttribute(Qt.WA_TranslucentBackground)
+            self.setAttribute(Qt.WA_TranslucentBackground, False)
 
             # MOVE WINDOW / MAXIMIZE / RESTORE
+            def titleMousePress(event):
+                self._native_move_active = False
+                self.dragPos = event_global_pos(event)
+                if event.button() == Qt.LeftButton:
+                    try:
+                        handle = self.windowHandle()
+                        if handle is not None and handle.startSystemMove():
+                            self._native_move_active = True
+                            event.accept()
+                            return
+                    except Exception:
+                        pass
+                event.accept()
+
             def moveWindow(event):
+                if getattr(self, "_native_move_active", False):
+                    event.accept()
+                    return
                 # IF MAXIMIZED CHANGE TO NORMAL
                 if UIFunctions.returStatus(self):
                     UIFunctions.maximize_restore(self)
                 # MOVE WINDOW
-                if event.buttons() == Qt.LeftButton:
-                    self.move(self.pos() + event.globalPos() - self.dragPos)
-                    self.dragPos = event.globalPos()
+                if event.buttons() == Qt.LeftButton and hasattr(self, "dragPos"):
+                    global_pos = event_global_pos(event)
+                    self.move(self.pos() + global_pos - self.dragPos)
+                    self.dragPos = global_pos
                     event.accept()
+            def titleMouseRelease(event):
+                self._native_move_active = False
+                event.accept()
+            self.ui.titleRightInfo.mousePressEvent = titleMousePress
             self.ui.titleRightInfo.mouseMoveEvent = moveWindow
+            self.ui.titleRightInfo.mouseReleaseEvent = titleMouseRelease
+            self.ui.contentTopBg.mousePressEvent = titleMousePress
+            self.ui.contentTopBg.mouseMoveEvent = moveWindow
+            self.ui.contentTopBg.mouseReleaseEvent = titleMouseRelease
 
             # CUSTOM GRIPS
             self.left_grip = CustomGrip(self, Qt.LeftEdge, True)
@@ -251,12 +285,8 @@ class UIFunctions(MainWindow):
             self.ui.frame_size_grip.hide()
 
         # DROP SHADOW
-        self.shadow = QGraphicsDropShadowEffect(self)
-        self.shadow.setBlurRadius(17)
-        self.shadow.setXOffset(0)
-        self.shadow.setYOffset(0)
-        self.shadow.setColor(QColor(0, 0, 0, 150))
-        self.ui.bgApp.setGraphicsEffect(self.shadow)
+        self.shadow = None
+        self.ui.bgApp.setGraphicsEffect(None)
 
         # RESIZE WINDOW
         self.sizegrip = QSizeGrip(self.ui.frame_size_grip)
@@ -271,11 +301,26 @@ class UIFunctions(MainWindow):
         self.ui.closeAppBtn.clicked.connect(lambda: self.close())
 
     def resize_grips(self):
-        if Settings.ENABLE_CUSTOM_TITLE_BAR:
-            self.left_grip.setGeometry(0, 10, 10, self.height())
-            self.right_grip.setGeometry(self.width() - 10, 10, 10, self.height())
-            self.top_grip.setGeometry(0, 0, self.width(), 10)
-            self.bottom_grip.setGeometry(0, self.height() - 10, self.width(), 10)
+        if Settings.ENABLE_CUSTOM_TITLE_BAR and hasattr(self, "left_grip"):
+            # Keep the four transparent hit areas inside the window bounds and
+            # non-overlapping.  The old full-height side grips extended beyond
+            # the bottom border while resizing, which could leave artefacts.
+            edge = 10
+            width = max(0, self.width())
+            height = max(0, self.height())
+            inner_width = max(0, width - 2 * edge)
+            inner_height = max(0, height - 2 * edge)
+
+            self.left_grip.setGeometry(0, edge, edge, inner_height)
+            self.right_grip.setGeometry(max(0, width - edge), edge, edge, inner_height)
+            self.top_grip.setGeometry(edge, 0, inner_width, edge)
+            self.bottom_grip.setGeometry(edge, max(0, height - edge), inner_width, edge)
+
+            # Grips are transparent but must remain above the page widgets.
+            self.left_grip.raise_()
+            self.right_grip.raise_()
+            self.top_grip.raise_()
+            self.bottom_grip.raise_()
 
     # ///////////////////////////////////////////////////////////////
     # END - GUI DEFINITIONS

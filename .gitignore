@@ -1,1 +1,13 @@
-main.ui
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.mypy_cache/
+.pytest_cache/
+
+AGENTS.md
+MEMORY.md
+PRD.md
+Tech-Spec.md

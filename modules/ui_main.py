@@ -1009,10 +1009,21 @@ class Ui_MainWindow(object):
         self.pagesContainer.setStyleSheet(u"")
         self.pagesContainer.setFrameShape(QFrame.NoFrame)
         self.pagesContainer.setFrameShadow(QFrame.Raised)
+
+        # The stacked page used to have a fixed QRect.  A fixed child geometry
+        # leaves stale/empty content at the right edge when the frameless
+        # window is widened and can crop controls such as Browse.  Manage it
+        # with the parent layout instead, while preserving the original 10 px
+        # left inset used by the Designer UI.
+        self.pagesLayout = QVBoxLayout(self.pagesContainer)
+        self.pagesLayout.setSpacing(0)
+        self.pagesLayout.setObjectName(u"pagesLayout")
+        self.pagesLayout.setContentsMargins(10, 0, 0, 0)
+
         self.stackedWidget = QStackedWidget(self.pagesContainer)
         self.stackedWidget.setObjectName(u"stackedWidget")
-        self.stackedWidget.setGeometry(QRect(10, 0, 1171, 814))
         self.stackedWidget.setStyleSheet(u"background: transparent;")
+        self.pagesLayout.addWidget(self.stackedWidget)
         self.noise = QWidget()
         self.noise.setObjectName(u"noise")
         self.btn_for_mrc = QPushButton(self.noise)
@@ -2386,7 +2397,7 @@ class Ui_MainWindow(object):
         self.btn_message.setText(QCoreApplication.translate("MainWindow", u"Message", None))
         self.btn_print.setText(QCoreApplication.translate("MainWindow", u"Print", None))
         self.btn_logout.setText(QCoreApplication.translate("MainWindow", u"Logout", None))
-        self.creditsLabel.setText(QCoreApplication.translate("MainWindow", u"By: Chen", None))
-        self.version.setText(QCoreApplication.translate("MainWindow", u"v0.0.1", None))
+        self.creditsLabel.setText(QCoreApplication.translate("MainWindow", u"By: Lu", None))
+        self.version.setText(QCoreApplication.translate("MainWindow", u"v0.0.2", None))
     # retranslateUi
 

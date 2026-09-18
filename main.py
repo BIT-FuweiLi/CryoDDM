@@ -1,42 +1,488 @@
 import sys
 import os
-import numpy as np
-import platform
 import subprocess
 from functools import partial
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
+    QDialog,
+    QDialogButtonBox,
     QMainWindow,
-    QFileDialog,
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
+    QPushButton,
+    QGraphicsItem,
     QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsPixmapItem,
+    QGraphicsView,
     QHeaderView,
+    QVBoxLayout,
 )
-from PySide6.QtCore import QThread, Signal, QPointF, QEvent, QTimer, Qt
+from PySide6.QtCore import QThread, Signal, QEvent, Qt, QSize, QDir, QSettings
 from PySide6.QtGui import QImage, QPixmap, QPen, QColor, QIcon, QPainter, QCursor
 from collections import OrderedDict
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Slot
 import time
-import mrcfile
-from skimage import exposure
 
 # IMPORT / GUI AND MODULES AND WIDGETS
 from modules import *
 from widgets import *
+from cryoddm import __version__
 
 os.environ["QT_FONT_DPI"] = "96"  # FIX Problem for High DPI and Scale above 100%
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
 
 # 全局 widgets 引用（由 Ui_MainWindow 初始化）
 widgets = None
+
+# Forward 页 "Y origin at bottom-left" 选项旁 (?) 图标的说明
+PARTICLE_ORIGIN_HELP = (
+    "<b>Y origin at bottom-left（Y 轴翻转）</b><br>"
+    "勾选后，forward 会把每个颗粒坐标的 y 换成 <i>H − y</i>（H = micrograph 高度）再裁剪；"
+    "不勾选时 y 直接当作 MRC 图像的行号。<br><br>"
+    "<b>✔ 需要勾选</b>"
+    "<ul style='margin-top:2px'>"
+    "<li>cryoSPARC 用 pyem <code>csparc2star.py</code> 直接导出、没有加 <code>--inverty</code> 的 STAR"
+    "（例如 cs2star 页面的中间文件 particles_relion.star、cleaned_particles_relion.star）</li>"
+    "</ul>"
+    "<b>✘ 不要勾选（默认）</b>"
+    "<ul style='margin-top:2px'>"
+    "<li>CryoDDM 自己点选保存的坐标</li>"
+    "<li>RELION 的 STAR（ManualPick / AutoPick / Extract）</li>"
+    "<li>CryoDDM cs2star 页面生成的 <b>invert.star</b>（y_value 填 micrograph 高度）</li>"
+    "<li>pyem 加了 <code>--inverty</code> 导出的 STAR</li>"
+    "<li>IMOD <code>model2point</code> 导出的坐标（先整理成 “文件名 x y”）</li>"
+    "</ul>"
+    "拿不准时：先用少量颗粒跑一次 forward，检查 <code>s1/particles.mrcs</code> 里颗粒是否位于图块中心。"
+)
 
 
 # -------------------- Add this runnable and signals class near other class defs (above MainWindow) --------------------
 class LoaderSignals(QObject):
     frameLoaded = Signal(int, QImage, object)
+
+
+class ImageDependencyWarmupRunnable(QRunnable):
+    """Preload image dependencies after the window appears, without blocking startup."""
+
+    @Slot()
+    def run(self):
+        try:
+            __import__("numpy")
+            __import__("mrcfile")
+        except Exception as e:
+            print(f"[ImageWarmup] dependency preload skipped: {e}")
+
+
+class NameOnlyFileDialog(QDialog):
+    """Directory browser that lists names only and never previews large files."""
+
+    def __init__(
+            self,
+            parent,
+            title,
+            start_dir,
+            mode="files",
+            allowed_suffixes=None,
+            default_suffix="",
+            recent_dirs=None,
+    ):
+        super().__init__(parent)
+        self.mode = mode
+        self.allowed_suffixes = tuple(s.lower() for s in (allowed_suffixes or ()))
+        self.default_suffix = default_suffix.lstrip(".")
+        self.recent_dirs = list(recent_dirs or [])
+        self._selected_paths = []
+        self.current_dir = self._safe_start_dir(start_dir)
+
+        self.setWindowTitle(title)
+        self.resize(860, 580)
+        self.setMinimumSize(680, 440)
+        self._apply_style()
+
+        title_label = QLabel(title)
+        title_label.setObjectName("dialogTitle")
+
+        subtitle = "Name-only browser"
+        if mode == "files":
+            subtitle = "Select files"
+        elif mode == "directory":
+            subtitle = "Select folder"
+        elif mode == "save":
+            subtitle = "Save file"
+        subtitle_label = QLabel(subtitle)
+        subtitle_label.setObjectName("dialogSubtitle")
+
+        self.path_edit = QLineEdit(self.current_dir)
+        self.path_edit.setObjectName("pathEdit")
+        self.path_edit.returnPressed.connect(lambda: self._set_directory(self.path_edit.text()))
+
+        self.up_button = QPushButton("Up")
+        self.up_button.setObjectName("secondaryButton")
+        self.up_button.clicked.connect(self._go_up)
+
+        path_row = QHBoxLayout()
+        path_row.setSpacing(8)
+        path_row.addWidget(QLabel("Folder"))
+        path_row.addWidget(self.path_edit, 1)
+        path_row.addWidget(self.up_button)
+
+        self.recent_combo = QComboBox()
+        self.recent_combo.setObjectName("recentCombo")
+        self.recent_combo.addItem("Recent folders", "")
+        for folder in self.recent_dirs[:5]:
+            self.recent_combo.addItem(folder, folder)
+        self.recent_combo.setEnabled(bool(self.recent_dirs))
+        self.recent_combo.activated.connect(self._open_recent_dir)
+
+        recent_row = QHBoxLayout()
+        recent_row.setSpacing(8)
+        recent_row.addWidget(QLabel("Recent"))
+        recent_row.addWidget(self.recent_combo, 1)
+
+        self.file_list = QListWidget()
+        self.file_list.setObjectName("fileList")
+        self.file_list.setUniformItemSizes(True)
+        self.file_list.setAlternatingRowColors(True)
+        self.file_list.setSelectionMode(
+            QAbstractItemView.ExtendedSelection if mode == "files" else QAbstractItemView.SingleSelection
+        )
+        self.file_list.itemDoubleClicked.connect(self._handle_double_click)
+
+        self.name_edit = QLineEdit()
+        self.name_edit.setObjectName("pathEdit")
+        self.name_edit.setPlaceholderText("File name")
+        self.name_edit.setVisible(mode == "save")
+
+        save_row = QHBoxLayout()
+        save_row.setSpacing(8)
+        self.name_label = QLabel("File name")
+        self.name_label.setVisible(mode == "save")
+        save_row.addWidget(self.name_label)
+        save_row.addWidget(self.name_edit, 1)
+
+        self.status_label = QLabel("")
+        self.status_label.setObjectName("statusLabel")
+
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Open | QDialogButtonBox.Cancel)
+        action_button = self.buttons.button(QDialogButtonBox.Open)
+        if action_button is not None:
+            if mode == "directory":
+                action_button.setText("Choose Folder")
+            elif mode == "save":
+                action_button.setText("Save")
+            else:
+                action_button.setText("Open")
+            action_button.setObjectName("primaryButton")
+        cancel_button = self.buttons.button(QDialogButtonBox.Cancel)
+        if cancel_button is not None:
+            cancel_button.setObjectName("secondaryButton")
+        self.buttons.accepted.connect(self._accept_selection)
+        self.buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+        layout.addWidget(title_label)
+        layout.addWidget(subtitle_label)
+        layout.addLayout(path_row)
+        layout.addLayout(recent_row)
+        layout.addWidget(self.file_list, 1)
+        layout.addLayout(save_row)
+        layout.addWidget(self.status_label)
+        layout.addWidget(self.buttons)
+
+        self._populate()
+
+    def _apply_style(self):
+        self.setStyleSheet("""
+        QDialog {
+            background-color: rgb(245, 246, 248);
+            color: rgb(31, 35, 40);
+            font: 10pt "Segoe UI";
+        }
+        QLabel {
+            color: rgb(31, 35, 40);
+        }
+        QLabel#dialogTitle {
+            color: rgb(24, 28, 33);
+            font: 600 13pt "Segoe UI";
+        }
+        QLabel#dialogSubtitle,
+        QLabel#statusLabel {
+            color: rgb(92, 99, 112);
+        }
+        QLineEdit#pathEdit {
+            background-color: rgb(255, 255, 255);
+            border: 1px solid rgb(207, 212, 220);
+            border-radius: 6px;
+            color: rgb(31, 35, 40);
+            padding: 7px 9px;
+            selection-background-color: rgb(209, 213, 219);
+        }
+        QComboBox#recentCombo {
+            background-color: rgb(255, 255, 255);
+            border: 1px solid rgb(207, 212, 220);
+            border-radius: 6px;
+            color: rgb(31, 35, 40);
+            padding: 6px 9px;
+        }
+        QComboBox#recentCombo:disabled {
+            color: rgb(156, 163, 175);
+            background-color: rgb(238, 240, 243);
+        }
+        QComboBox#recentCombo::drop-down {
+            border: 0px;
+            width: 26px;
+        }
+        QComboBox#recentCombo QAbstractItemView {
+            background-color: rgb(255, 255, 255);
+            border: 1px solid rgb(207, 212, 220);
+            color: rgb(31, 35, 40);
+            selection-background-color: rgb(209, 213, 219);
+            selection-color: rgb(17, 24, 39);
+        }
+        QListWidget#fileList {
+            background-color: rgb(255, 255, 255);
+            border: 1px solid rgb(207, 212, 220);
+            border-radius: 6px;
+            color: rgb(31, 35, 40);
+            outline: 0;
+            padding: 4px;
+        }
+        QListWidget#fileList::item {
+            min-height: 26px;
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+        QListWidget#fileList::item:alternate {
+            background-color: rgb(249, 250, 251);
+        }
+        QListWidget#fileList::item:selected {
+            background-color: rgb(209, 213, 219);
+            color: rgb(17, 24, 39);
+        }
+        QPushButton {
+            background-color: rgb(255, 255, 255);
+            border: 1px solid rgb(207, 212, 220);
+            border-radius: 6px;
+            color: rgb(31, 35, 40);
+            min-height: 28px;
+            padding: 5px 14px;
+        }
+        QPushButton:hover {
+            background-color: rgb(238, 240, 243);
+        }
+        QPushButton#primaryButton {
+            background-color: rgb(75, 85, 99);
+            border-color: rgb(75, 85, 99);
+            color: rgb(255, 255, 255);
+            font-weight: 600;
+        }
+        QPushButton#primaryButton:hover {
+            background-color: rgb(55, 65, 81);
+        }
+        QScrollBar:vertical {
+            background: rgb(245, 246, 248);
+            width: 11px;
+            margin: 0px;
+        }
+        QScrollBar::handle:vertical {
+            background: rgb(196, 201, 209);
+            border-radius: 5px;
+            min-height: 32px;
+        }
+        QScrollBar:horizontal {
+            background: rgb(245, 246, 248);
+            height: 11px;
+            margin: 0px;
+        }
+        QScrollBar::handle:horizontal {
+            background: rgb(196, 201, 209);
+            border-radius: 5px;
+            min-width: 32px;
+        }
+        QScrollBar::add-line,
+        QScrollBar::sub-line {
+            height: 0px;
+            width: 0px;
+        }
+        """)
+
+    def selected_paths(self):
+        return list(self._selected_paths)
+
+    def _safe_start_dir(self, start_dir):
+        candidate = start_dir or QDir.homePath()
+        try:
+            if os.path.isdir(candidate):
+                return os.path.abspath(candidate)
+        except Exception:
+            pass
+        return QDir.homePath()
+
+    def _matches_filter(self, name):
+        if not self.allowed_suffixes:
+            return True
+        lower_name = name.lower()
+        return any(lower_name.endswith(suffix) for suffix in self.allowed_suffixes)
+
+    def _entry_kind(self, entry):
+        try:
+            if entry.is_dir(follow_symlinks=False):
+                return "dir"
+        except OSError:
+            pass
+        try:
+            if entry.is_symlink():
+                return "link"
+        except OSError:
+            pass
+        return "file"
+
+    def _populate(self):
+        self.file_list.clear()
+        rows = []
+        try:
+            with os.scandir(self.current_dir) as entries:
+                for entry in entries:
+                    name = entry.name
+                    kind = self._entry_kind(entry)
+                    if self.mode == "directory" and kind not in ("dir", "link"):
+                        continue
+                    if self.mode in ("files", "save") and kind == "file" and not self._matches_filter(name):
+                        continue
+                    if self.mode in ("files", "save") and kind == "link" and self.allowed_suffixes and not self._matches_filter(name):
+                        try:
+                            if not os.path.isdir(entry.path):
+                                continue
+                        except Exception:
+                            continue
+                    rows.append((kind != "dir", name.lower(), name, entry.path, kind))
+        except Exception as e:
+            self.status_label.setText(f"Unable to read folder: {e}")
+            return
+
+        rows.sort()
+        for _, _, name, path, kind in rows:
+            label = f"[DIR]  {name}" if kind == "dir" else f"       {name}"
+            item = QListWidgetItem(label)
+            item.setData(Qt.UserRole, {"path": path, "kind": kind})
+            self.file_list.addItem(item)
+        self.path_edit.setText(self.current_dir)
+        self.status_label.setText(f"{len(rows)} names listed")
+
+    def _set_directory(self, path):
+        try:
+            candidate = os.path.abspath(os.path.expanduser(path))
+            if os.path.isdir(candidate):
+                self.current_dir = candidate
+                self._populate()
+        except Exception as e:
+            self.status_label.setText(f"Unable to open folder: {e}")
+
+    def _go_up(self):
+        parent_dir = os.path.dirname(self.current_dir)
+        if parent_dir and parent_dir != self.current_dir:
+            self._set_directory(parent_dir)
+
+    def _open_recent_dir(self, index):
+        if isinstance(index, str):
+            path = index
+        else:
+            path = self.recent_combo.itemData(index)
+        if path:
+            self._set_directory(path)
+
+    def _handle_double_click(self, item):
+        data = item.data(Qt.UserRole) or {}
+        path = data.get("path")
+        if not path:
+            return
+        try:
+            if os.path.isdir(path):
+                self._set_directory(path)
+                return
+        except Exception as e:
+            self.status_label.setText(f"Unable to open folder: {e}")
+            return
+        if self.mode == "save":
+            self.name_edit.setText(os.path.basename(path))
+            return
+        if self.mode == "files":
+            self._selected_paths = [path]
+            self.accept()
+
+    def _accept_selection(self):
+        selected_items = self.file_list.selectedItems()
+        if self.mode == "directory":
+            if selected_items:
+                data = selected_items[0].data(Qt.UserRole) or {}
+                path = data.get("path")
+                if path:
+                    try:
+                        if os.path.isdir(path):
+                            self._selected_paths = [path]
+                            self.accept()
+                            return
+                    except Exception as e:
+                        self.status_label.setText(f"Unable to choose folder: {e}")
+                        return
+                    self.status_label.setText("Select a folder.")
+                    return
+            self._selected_paths = [self.current_dir]
+            self.accept()
+            return
+
+        if self.mode == "save":
+            file_name = self.name_edit.text().strip()
+            if not file_name and selected_items:
+                data = selected_items[0].data(Qt.UserRole) or {}
+                path = data.get("path")
+                if path:
+                    try:
+                        if os.path.isdir(path):
+                            self._set_directory(path)
+                            return
+                    except Exception as e:
+                        self.status_label.setText(f"Unable to open folder: {e}")
+                        return
+                    file_name = os.path.basename(path)
+            if not file_name:
+                self.status_label.setText("Enter a file name.")
+                return
+            if self.default_suffix and not file_name.lower().endswith(f".{self.default_suffix.lower()}"):
+                file_name += f".{self.default_suffix}"
+            self._selected_paths = [os.path.join(self.current_dir, file_name)]
+            self.accept()
+            return
+
+        selected_paths = []
+        for item in selected_items:
+            data = item.data(Qt.UserRole) or {}
+            path = data.get("path")
+            if not path:
+                continue
+            try:
+                if os.path.isdir(path):
+                    if len(selected_items) == 1:
+                        self._set_directory(path)
+                        return
+                    continue
+            except Exception:
+                continue
+            selected_paths.append(path)
+
+        if selected_paths:
+            self._selected_paths = selected_paths
+            self.accept()
+        else:
+            self.status_label.setText("Select one or more files.")
 
 
 class MRCFullLoadRunnable(QRunnable):
@@ -46,79 +492,104 @@ class MRCFullLoadRunnable(QRunnable):
     and emit it to main thread via signals.frameLoaded.
     """
 
-    def __init__(self, file_path: str, index: int, do_adapthist: bool = True):
+    def __init__(
+            self,
+            file_path: str,
+            index: int,
+            do_adapthist: bool = False,
+            max_preview_edge: int = 4096,
+            generation: int = 0,
+    ):
         super().__init__()
         self.file_path = file_path
         self.index = index
         self.do_adapthist = do_adapthist
+        self.max_preview_edge = max(512, int(max_preview_edge))
+        self.generation = generation
         self.signals = LoaderSignals()
+
+    def _build_preview(self, data):
+        import numpy as np
+
+        if data is None:
+            return None, None
+
+        arr = data[0] if getattr(data, "ndim", 0) == 3 else data
+        if getattr(arr, "ndim", 0) != 2:
+            return None, None
+
+        source_h, source_w = int(arr.shape[0]), int(arr.shape[1])
+        stride = max(1, int(np.ceil(max(source_h, source_w) / self.max_preview_edge)))
+        preview = np.asarray(arr[::stride, ::stride], dtype=np.float32)
+
+        mean = float(np.nanmean(preview))
+        std = float(np.nanstd(preview))
+        if np.isfinite(mean) and np.isfinite(std) and std > 0:
+            clipped = np.clip(preview, mean - 3 * std, mean + 3 * std)
+        else:
+            clipped = preview
+
+        min_val = float(np.nanmin(clipped))
+        max_val = float(np.nanmax(clipped))
+        if not np.isfinite(min_val) or not np.isfinite(max_val) or max_val <= min_val:
+            enhanced_data = np.zeros(clipped.shape, dtype=np.uint8)
+        else:
+            enhanced_data = ((clipped - min_val) * (255.0 / (max_val - min_val))).astype(np.uint8)
+
+        # CLAHE is kept only for small previews; on 270 MB micrographs it is the
+        # difference between responsive browsing and seconds of memory churn.
+        if self.do_adapthist and enhanced_data.size <= 2_000_000:
+            try:
+                from skimage import exposure
+
+                adaptive_data = exposure.equalize_adapthist(enhanced_data, clip_limit=0.01)
+                enhanced_data = (adaptive_data * 255).astype(np.uint8)
+            except Exception:
+                pass
+
+        enhanced_data = np.ascontiguousarray(enhanced_data)
+        display_h, display_w = int(enhanced_data.shape[0]), int(enhanced_data.shape[1])
+        qimg = QImage(
+            enhanced_data.tobytes(),
+            display_w,
+            display_h,
+            display_w,
+            QImage.Format_Grayscale8,
+        ).copy()
+        meta = {
+            "file": self.file_path,
+            "index": self.index,
+            "generation": self.generation,
+            "source_shape": (source_h, source_w),
+            "display_shape": (display_h, display_w),
+            "scale_x": source_w / max(1, display_w),
+            "scale_y": source_h / max(1, display_h),
+            "stride": stride,
+            "min": min_val,
+            "max": max_val,
+        }
+        return qimg, meta
 
     @Slot()
     def run(self):
         t0 = time.perf_counter()
         try:
-            # open mrc (support gz) safely
+            import mrcfile
+
             if self.file_path.endswith(".gz"):
-                import gzip
-                with gzip.open(self.file_path, "rb") as fobj:
-                    with mrcfile.open(fileobj=fobj, permissive=True) as m:
-                        data = m.data
-            else:
                 with mrcfile.open(self.file_path, permissive=True) as m:
-                    data = m.data
-
-            if data is None:
-                return
-
-            # choose first frame if stack
-            if data.ndim == 3:
-                arr = data[0]
+                    qimg, meta = self._build_preview(m.data)
             else:
-                arr = data
-
-            # Preserve original processing: robust linear mapping + adaptive equalize (if enabled)
-            # replicate your previous mask-based approach to keep identical visual results
-            mean = np.mean(arr)
-            std = np.std(arr)
-            mask = (arr >= (mean - 3 * std)) & (arr <= (mean + 3 * std))
-            data_filtered = np.where(mask, arr, mean)
-
-            min_val = float(np.min(data_filtered))
-            max_val = float(np.max(data_filtered))
-            if max_val - min_val == 0:
-                normalized_data = np.zeros_like(data_filtered).astype(np.uint8)
-            else:
-                normalized_data = ((data_filtered - min_val) / (max_val - min_val) * 255).astype(np.uint8)
-
-            # apply adaptive equalization if requested (keeps output identical to previous pipeline)
-            if self.do_adapthist:
                 try:
-                    adaptive_data = exposure.equalize_adapthist(normalized_data, clip_limit=0.01)
-                    enhanced_data = (adaptive_data * 255).astype(np.uint8)
+                    with mrcfile.mmap(self.file_path, permissive=True) as m:
+                        qimg, meta = self._build_preview(m.data)
                 except Exception:
-                    enhanced_data = normalized_data
-            else:
-                enhanced_data = normalized_data
+                    with mrcfile.open(self.file_path, permissive=True) as m:
+                        qimg, meta = self._build_preview(m.data)
 
-            h, w = enhanced_data.shape
-
-            # create QImage from bytes and .copy() to avoid referencing numpy memory
-            try:
-                data_bytes = enhanced_data.tobytes()
-                qimg = QImage(data_bytes, w, h, w, QImage.Format_Grayscale8).copy()
-            except Exception as e:
-                print(f"[LoaderRunnable] QImage creation failed idx={self.index}: {e}")
+            if qimg is None or meta is None:
                 return
-
-            meta = {
-                "file": self.file_path,
-                "shape": (h, w),
-                "min": float(min_val),
-                "max": float(max_val),
-                "elapsed": time.perf_counter() - t0
-            }
-
-            # emit to main thread
+            meta["elapsed"] = time.perf_counter() - t0
             try:
                 self.signals.frameLoaded.emit(self.index, qimg, meta)
             except Exception as e:
@@ -139,9 +610,17 @@ class MainWindow(QMainWindow):
         self.ui.setupUi(self)
         global widgets
         widgets = self.ui
+        widgets.version.setText(f"v{__version__}")
+        # invert.star 需要用 micrograph 的高度（Y 方向像素数）把 pyem 翻转过的 y 还原
+        widgets.line_cs_y.setPlaceholderText("micrograph height in pixels (Y size)")
 
         # 内部 state
         self.coordinates = {}
+        self._browse_settings = QSettings("CryoDDM", "CryoDDM")
+        self._recent_dialog_dirs = self._load_recent_dialog_dirs()
+        self._last_dialog_dir = QDir.homePath()
+        if self._recent_dialog_dirs:
+            self._last_dialog_dir = self._recent_dialog_dirs[0]
         Settings.ENABLE_CUSTOM_TITLE_BAR = True
 
         title = "CryoDDM - Modern GUI"
@@ -162,12 +641,16 @@ class MainWindow(QMainWindow):
 
         # ---------------- 图像视图与交互 ----------------
         self.scene = QGraphicsScene(self)
+        self.scene.setItemIndexMethod(QGraphicsScene.NoIndex)
         self.ui.mrcView.setScene(self.scene)
+        self._configure_fast_image_view()
 
         self.image_list = []
         self.file_names = []
+        self.image_meta = {}
         self.current_index = 0
         self.pixmap_item = None
+        self._last_rendered_index = None
 
         # 按钮 & 控件绑定
         self.ui.btn_for_mrc.clicked.connect(self.load_mrc_files)
@@ -203,6 +686,36 @@ class MainWindow(QMainWindow):
         self.ui.comboBox_config.addItem("配置 2")
         self.ui.comboBox_config.addItem("自定义")
         self.ui.comboBox_config.currentIndexChanged.connect(self.toggle_add_noise)
+
+        # 粒子坐标原点：勾选后 forward 按 y -> H - y 翻转再裁剪；默认不勾选（y 就是 MRC 行号）
+        self.widget_particle_origin = QWidget(self.ui.forward)
+        self.widget_particle_origin.setObjectName("widget_particle_origin")
+        self.widget_particle_origin.setGeometry(QRect(190, 478, 820, 24))
+        origin_layout = QHBoxLayout(self.widget_particle_origin)
+        origin_layout.setContentsMargins(0, 0, 0, 0)
+        origin_layout.setSpacing(8)
+        self.checkBox_flip_particle_y = QCheckBox("Y origin at bottom-left (flip y -> H - y)", self.widget_particle_origin)
+        self.checkBox_flip_particle_y.setObjectName("checkBox_flip_particle_y")
+        self.checkBox_flip_particle_y.setToolTip(PARTICLE_ORIGIN_HELP)
+        self.label_particle_origin_help = QLabel("?", self.widget_particle_origin)
+        self.label_particle_origin_help.setObjectName("label_particle_origin_help")
+        self.label_particle_origin_help.setFixedSize(18, 18)
+        self.label_particle_origin_help.setAlignment(Qt.AlignCenter)
+        self.label_particle_origin_help.setCursor(Qt.WhatsThisCursor)
+        # 全局 QToolTip 背景半透明，长说明叠在页面上难读，这里用不透明背景
+        opaque_tooltip = (
+            "QToolTip { color: #ffffff; background-color: rgb(33, 37, 43);"
+            " border: 1px solid rgb(189, 147, 249); padding: 6px; }"
+        )
+        self.checkBox_flip_particle_y.setStyleSheet(opaque_tooltip)
+        self.label_particle_origin_help.setStyleSheet(
+            "QLabel { border: 1px solid rgb(189, 147, 249); border-radius: 9px;"
+            " color: rgb(189, 147, 249); font-weight: bold; font-size: 11px; }" + opaque_tooltip
+        )
+        self.label_particle_origin_help.setToolTip(PARTICLE_ORIGIN_HELP)
+        origin_layout.addWidget(self.checkBox_flip_particle_y)
+        origin_layout.addWidget(self.label_particle_origin_help)
+        origin_layout.addStretch(1)
 
         self.ui.label_6.setVisible(False)
         self.ui.label_5.setVisible(False)
@@ -253,8 +766,6 @@ class MainWindow(QMainWindow):
         widgets.extraCloseColumnBtn.clicked.connect(openCloseLeftBox)
 
         # 显示窗口
-        self.show()
-
         # SET THEME
         useCustomTheme = False
         themeFile = "themes\\py_dracula_light.qss"
@@ -279,9 +790,9 @@ class MainWindow(QMainWindow):
         # MRC 文件缓存/加载设置
         self.thread_pool = QThreadPool.globalInstance()
         # 限制最大线程数，避免 IO 密集导致卡顿
-        self.thread_pool.setMaxThreadCount(min(4, max(1, os.cpu_count() or 2)))
+        self.thread_pool.setMaxThreadCount(min(2, max(1, os.cpu_count() or 2)))
 
-        self.PRELOAD_THRESHOLD = 30  # 阈值：少于30张全加载
+        self.PRELOAD_THRESHOLD = 0  # Legacy path stays lazy; performance override below is authoritative.
         self._default_cache_capacity = 6  # 大文件模式下的缓存上限
         self._cache_capacity = self._default_cache_capacity
 
@@ -294,21 +805,147 @@ class MainWindow(QMainWindow):
         self.all_mrc_files = []
         self.INITIAL_LOAD_COUNT = 1
         self.BATCH_LOAD_COUNT = 3
+        self.MAX_PREVIEW_EDGE = 4096
+        self.PREFETCH_RADIUS = 1
+        self._default_cache_capacity = 8
+        self._cache_capacity = self._default_cache_capacity
+        self.DO_ADAPTHIST = False
+        self._load_generation = 0
 
         # preserve whether adaptive equalize should be applied (match original behavior)
         self.DO_ADAPTHIST = True
+        self.DO_ADAPTHIST = False
         # -----------------------------------------------------------------------------------------------
 
         # 脚本 runner 占位
         self.script_runner = None
+        self._apply_runtime_ui_fixes()
+        self.show()
+        self._start_image_dependency_warmup()
 
     # -------------------------
     # 事件位置兼容函数：统一从事件获取 viewport 坐标（QPoint）
     # -------------------------
+    def _configure_fast_image_view(self):
+        view = self.ui.mrcView
+        view.setInteractive(False)
+        view.setDragMode(QGraphicsView.NoDrag)
+        view.setBackgroundBrush(QColor(52, 59, 72))
+        view.setStyleSheet("background-color: rgb(52, 59, 72);")
+        view.viewport().setStyleSheet("background-color: rgb(52, 59, 72);")
+        view.viewport().setAutoFillBackground(True)
+        view.setRenderHint(QPainter.SmoothPixmapTransform, False)
+        view.setRenderHint(QPainter.Antialiasing, False)
+        view.setOptimizationFlag(QGraphicsView.DontAdjustForAntialiasing, True)
+        view.setOptimizationFlag(QGraphicsView.DontSavePainterState, True)
+        view.setCacheMode(QGraphicsView.CacheBackground)
+        view.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        view.setResizeAnchor(QGraphicsView.AnchorViewCenter)
+        view.setViewportUpdateMode(QGraphicsView.MinimalViewportUpdate)
+
+        for bar in (view.horizontalScrollBar(), view.verticalScrollBar()):
+            bar.setTracking(True)
+            bar.setSingleStep(64)
+
+    def _apply_runtime_ui_fixes(self):
+        button_size = 28
+        spacing = 5
+        self.ui.horizontalLayout_2.setSpacing(spacing)
+        self.ui.rightButtons.setFixedSize(button_size * 3 + spacing * 2, button_size)
+        self.ui.rightButtons.setVisible(True)
+
+        title_buttons = [
+            (self.ui.minimizeAppBtn, ":/icons/images/icons/icon_minimize.png", "Minimize"),
+            (self.ui.maximizeRestoreAppBtn, ":/icons/images/icons/icon_maximize.png", "Maximize"),
+            (self.ui.closeAppBtn, ":/icons/images/icons/icon_close.png", "Close"),
+        ]
+        for button, icon_path, tooltip in title_buttons:
+            button.setVisible(True)
+            button.setEnabled(True)
+            button.setFixedSize(button_size, button_size)
+            button.setIcon(QIcon(icon_path))
+            button.setIconSize(QSize(18, 18))
+            button.setText("")
+            button.setToolTip(tooltip)
+
+        self.ui.rightButtons.raise_()
+        self._connect_window_control_buttons()
+
+        # Keep the Designer geometry for page controls.  These widgets live in
+        # the responsive stacked-page layout defined in widgets/ui_main.py.
+        # Reapplying fixed coordinates here overrides the UI definition and can
+        # clip the Browse button when the window is resized.
+        self.ui.titleRightInfo.setToolTip(self.ui.titleRightInfo.text())
+        self.ui.checkBox_particle_coord.setText("Use particle coordinates")
+        self.ui.checkBox_particle_coord.setToolTip("Use particle data to find noisy regions")
+
+    def _start_image_dependency_warmup(self):
+        self._warmup_thread_pool = QThreadPool(self)
+        self._warmup_thread_pool.setMaxThreadCount(1)
+        warmup = ImageDependencyWarmupRunnable()
+        self._warmup_thread_pool.start(warmup, -1)
+
+    def _connect_window_control_buttons(self):
+        button_actions = (
+            (self.ui.minimizeAppBtn, self._minimize_window),
+            (self.ui.maximizeRestoreAppBtn, self._toggle_maximize_restore),
+            (self.ui.closeAppBtn, self.close),
+        )
+        for button, action in button_actions:
+            try:
+                button.clicked.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            button.clicked.connect(lambda _checked=False, action=action: action())
+            button.raise_()
+
+    def _minimize_window(self):
+        self.setWindowState(self.windowState() | Qt.WindowMinimized)
+
+    def _toggle_maximize_restore(self):
+        if self.isMaximized():
+            self.showNormal()
+            self._set_maximized_ui_state(False)
+        else:
+            self.showMaximized()
+            self._set_maximized_ui_state(True)
+
+    def _set_maximized_ui_state(self, maximized):
+        try:
+            UIFunctions.setStatus(self, maximized)
+        except Exception:
+            pass
+        try:
+            if maximized:
+                self.ui.appMargins.setContentsMargins(0, 0, 0, 0)
+            else:
+                self.ui.appMargins.setContentsMargins(10, 10, 10, 10)
+        except Exception:
+            pass
+
+        if maximized:
+            tooltip = "Restore"
+            icon_path = ":/icons/images/icons/icon_restore.png"
+        else:
+            tooltip = "Maximize"
+            icon_path = ":/icons/images/icons/icon_maximize.png"
+        self.ui.maximizeRestoreAppBtn.setToolTip(tooltip)
+        self.ui.maximizeRestoreAppBtn.setIcon(QIcon(icon_path))
+
+        for grip_name in ("left_grip", "right_grip", "top_grip", "bottom_grip"):
+            grip = getattr(self, grip_name, None)
+            if grip is None:
+                continue
+            grip.hide() if maximized else grip.show()
+        try:
+            self.ui.frame_size_grip.hide() if maximized else self.ui.frame_size_grip.show()
+        except Exception:
+            pass
+
     def _event_to_viewport_point(self, event):
         """
         从鼠标/滚轮事件安全获取视口坐标。
-        优先使用 event.position()（QPointF），回退到 event.pos()。
+        优先使用 event.position()，回退到 event.pos()。
         返回 None 表示无法获取。
         """
         try:
@@ -383,11 +1020,19 @@ class MainWindow(QMainWindow):
                                 vp_pt = self.ui.mrcView.viewport().mapFromGlobal(global_pos)
                             except Exception:
                                 vp_pt = self.ui.mrcView.viewport().rect().center()
+                    try:
+                        phase = event.phase()
+                        if phase == getattr(Qt, "ScrollMomentum", None):
+                            return True
+                        scroll_phase = getattr(Qt, "ScrollPhase", None)
+                        if scroll_phase is not None and phase == getattr(scroll_phase, "ScrollMomentum", None):
+                            return True
+                    except Exception:
+                        pass
                     delta = event.angleDelta().y()
                     if delta == 0:
                         return False
-                    factor = 1.25 if delta > 0 else 0.8
-                    self.animate_zoom(factor, anchor=vp_pt, steps=1, step_ms=2)
+                    self.animate_zoom(1.08 ** (delta / 120.0), anchor=vp_pt)
                     return True
         except Exception as e:
             print("eventFilter error:", e)
@@ -403,47 +1048,13 @@ class MainWindow(QMainWindow):
         # lineEdit_for_mrc_path不参与同步
 
     # -------------------------
-    # 左键点击（标注）处理
-    # -------------------------
-    def handle_image_click(self, mouse_event):
-        try:
-            vp_pt = self._event_to_viewport_point(mouse_event)
-            if vp_pt is None:
-                return
-            scene_pos = self.ui.mrcView.mapToScene(vp_pt)
-            pix_item = self.pixmap_item
-            if pix_item is None:
-                for it in self.scene.items():
-                    if isinstance(it, QGraphicsPixmapItem):
-                        pix_item = it
-                        break
-                if pix_item is None:
-                    return
-            pixmap_pos = pix_item.mapFromScene(scene_pos)
-            x_pixel = int(pixmap_pos.x())
-            y_pixel = int(pixmap_pos.y())
-            modifiers = QApplication.keyboardModifiers()
-            if modifiers == Qt.ControlModifier:
-                self.remove_box(x_pixel, y_pixel)
-                self.remove_coordinates(x_pixel, y_pixel)
-            else:
-                try:
-                    self.ui.label_click_pos.setText(f"x: ({x_pixel}, y: {y_pixel})")
-                except Exception:
-                    pass
-                self.save_coordinates(x_pixel, y_pixel)
-        except Exception as e:
-            print("handle_image_click error:", e)
-
-    # -------------------------
-    # 平滑缩放：多步缩放 + 补偿锚点，使锚点在视口上看起来不动
+    # 缩放：直接缩放 + 补偿锚点，使锚点在视口上看起来不动
     # -------------------------
     def animate_zoom(self, factor, anchor=None, steps=1, step_ms=1):
         """缩放逻辑 (限制最小缩放不小于适应窗口)"""
         try:
             if self.pixmap_item is None: return
 
-            # --- 【修改开始】限制缩小逻辑 ---
             if factor < 1:  # 只有在试图缩小时才检查
                 img_rect = self.pixmap_item.boundingRect()
                 view_rect = self.ui.mrcView.viewport().rect()
@@ -458,180 +1069,28 @@ class MainWindow(QMainWindow):
                     # 只要有一边填满窗口即可，所以取 min
                     min_scale = min(scale_w, scale_h)
 
-                    # 如果目标缩放比例小于最小比例 (允许 1% 的误差缓冲)
                     if (current_scale * factor) < (min_scale * 0.99):
-                        # 强制重置为适应窗口 (Fit In View)
-                        self.ui.mrcView.fitInView(self.pixmap_item, Qt.KeepAspectRatio)
-                        # 居中
-                        self.ui.mrcView.centerOn(self.pixmap_item)
-                        return  # 停止后续的缩小动画
-            # --- 【修改结束】 ---
+                        if current_scale <= 0:
+                            return
+                        factor = min_scale / current_scale
+                        if factor >= 0.99:
+                            return
 
             if anchor is None:
                 anchor = self.ui.mrcView.viewport().rect().center()
 
-            step_factor = float(factor) ** (1.0 / steps)
+            if abs(float(factor) - 1.0) < 0.001:
+                return
 
             scene_before = self.ui.mrcView.mapToScene(anchor)
-            self.ui.mrcView.scale(step_factor, step_factor)
+            self.ui.mrcView.scale(factor, factor)
             scene_after = self.ui.mrcView.mapToScene(anchor)
             delta = scene_before - scene_after
             center = self.ui.mrcView.mapToScene(self.ui.mrcView.viewport().rect().center())
             self.ui.mrcView.centerOn(center + delta)
-
         except Exception as e:
             print("Zoom error:", e)
 
-    # -------------------------
-    # MRC 加载 / 图片处理 / 显示
-    # -------------------------
-    def load_mrc_files(self):
-        """选择并开始加载 MRC 文件 (混合策略版)"""
-        file_paths, _ = QFileDialog.getOpenFileNames(
-            self, "选择MRC文件", "", "MRC Files (*.mrc *.mrcs *.mrcs.gz);;All Files (*)"
-        )
-        if not file_paths:
-            return
-        try:
-            # 重置状态
-            self.image_list = []
-            self.file_names = []
-            self.all_mrc_files = file_paths
-            self.loaded_indices = set()
-            self.loading_indices = set()  # 重置正在加载集合
-            self.PREVIEW_CACHE.clear()
-            self.current_index = 0
-
-            # 设置路径显示
-            mrc_path = os.path.dirname(file_paths[0])
-            try:
-                self.ui.lineEdit_for_mrc_path.setText(mrc_path)
-            except:
-                pass
-
-            total_files = len(file_paths)
-
-            # --- 【修改开始】混合加载策略判断 ---
-            if total_files <= self.PRELOAD_THRESHOLD:
-                # 策略 A: 少量文件 -> 全量预加载
-                print(f"[Load Strategy] Small batch ({total_files}): Preloading ALL.")
-                # 动态扩大缓存，确保所有图片都能存下，不被 LRU 踢出
-                self._cache_capacity = total_files + 2
-                # 一次性提交所有任务
-                self.load_batch_images(0, total_files)
-            else:
-                # 策略 B: 大量文件 -> 按需加载 (LRU)
-                print(f"[Load Strategy] Large batch ({total_files}): LRU mode (Cap={self._default_cache_capacity}).")
-                # 恢复默认的小缓存容量
-                self._cache_capacity = self._default_cache_capacity
-                # 只加载初始的几张
-                self.load_batch_images(0, min(self.INITIAL_LOAD_COUNT, total_files))
-            # --- 【修改结束】 ---
-
-            # 无论是否加载完，先调用显示（会等待回调）
-            self.show_image(0)
-            self.update_status()
-
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"无法加载MRC文件: {e}")
-
-    def load_batch_images(self, start_idx, end_idx):
-        """异步提交任务到线程池"""
-        for i in range(start_idx, end_idx):
-            if i >= len(self.all_mrc_files): continue
-            if i in self.loaded_indices: continue
-
-            # --- 【修改开始】防止重复提交 ---
-            if i in self.loading_indices: continue
-            # --- 【修改结束】 ---
-
-            file_path = self.all_mrc_files[i]
-
-            # 1. 查缓存
-            pix_cached = self.PREVIEW_CACHE.get(file_path)
-            if pix_cached is not None:
-                self.PREVIEW_CACHE.move_to_end(file_path)
-                self._update_lists_with_pixmap(i, pix_cached, file_path)
-                continue
-
-            # 2. 没缓存，提交后台任务
-            self.loading_indices.add(i)  # 标记为正在加载
-            runnable = MRCFullLoadRunnable(file_path, i, do_adapthist=self.DO_ADAPTHIST)
-            runnable.signals.frameLoaded.connect(self.on_frame_loaded)
-            self.thread_pool.start(runnable)
-
-    # -------------------- Replace or add on_frame_loaded in MainWindow (main-thread only UI updates & caching) --------------------
-    def on_frame_loaded(self, index: int, qimg: QImage, meta: object):
-        """主线程回调：接收后台图片并更新UI"""
-        # --- 【修改开始】移除正在加载标记 ---
-        try:
-            self.loading_indices.discard(index)
-        except:
-            pass
-        # --- 【修改结束】 ---
-
-        # 转为 Pixmap
-        try:
-            pix = QPixmap.fromImage(qimg)
-        except:
-            pix = QPixmap(qimg)
-
-        # 更新列表
-        self._update_lists_with_pixmap(index, pix, self.all_mrc_files[index])
-
-        # 存入 LRU 缓存
-        file_path = self.all_mrc_files[index]
-        self.PREVIEW_CACHE[file_path] = pix
-        self.PREVIEW_CACHE.move_to_end(file_path)
-
-        # 缓存超限则清理旧图
-        while len(self.PREVIEW_CACHE) > self._cache_capacity:
-            try:
-                self.PREVIEW_CACHE.popitem(last=False)
-            except:
-                break
-
-        # 如果是当前页，刷新显示
-        if index == self.current_index:
-            self._render_current_image()
-
-    # -------------------------------------------------------------
-    # 请将以下两个函数插入到 on_frame_loaded 函数下方
-    # -------------------------------------------------------------
-
-    def _update_lists_with_pixmap(self, index, pix, file_path):
-        """辅助函数：更新列表数据"""
-        while len(self.image_list) <= index:
-            self.image_list.append(None)
-        self.image_list[index] = pix
-
-        while len(self.file_names) <= index:
-            self.file_names.append(None)
-        self.file_names[index] = os.path.basename(file_path)
-        
-        self.loaded_indices.add(index)
-
-    def _render_current_image(self):
-        """辅助函数：将当前缓存的图片画到屏幕上"""
-        if self.current_index < len(self.image_list):
-            pix = self.image_list[self.current_index]
-            if pix is not None:
-                if self.pixmap_item is None:
-                    self.pixmap_item = QGraphicsPixmapItem(pix)
-                    self.pixmap_item.setCacheMode(QGraphicsPixmapItem.DeviceCoordinateCache)
-                    self.scene.clear()
-                    self.scene.addItem(self.pixmap_item)
-                    # 首次加载适应窗口
-                    try:
-                        self.ui.mrcView.resetTransform()
-                        self.ui.mrcView.setSceneRect(self.pixmap_item.boundingRect())
-                        self.ui.mrcView.fitInView(self.pixmap_item, Qt.KeepAspectRatio)
-                    except: pass
-                else:
-                    self.pixmap_item.setPixmap(pix)
-                
-                self.draw_boxes_for_current_image()
-            
     # -----------------------------------------------------------------------------------------------
     def toggle_coord_controls(self, checked):
         """切换颗粒坐标相关控件的可见性"""
@@ -646,20 +1105,6 @@ class MainWindow(QMainWindow):
         # 如果取消勾选,同步使用forward页面的路径
         if not checked:
             self.sync_particle_coord(self.ui.lineEdit_8.text())
-
-    def show_image(self, index):
-        if 0 <= index < len(self.all_mrc_files):
-            # --- 【修改开始】仅在大量文件(LRU模式)下触发按需加载 ---
-            if len(self.all_mrc_files) > self.PRELOAD_THRESHOLD:
-                if index not in self.loaded_indices:
-                    batch_start = max(0, index - self.BATCH_LOAD_COUNT // 2)
-                    batch_end = min(len(self.all_mrc_files), batch_start + self.BATCH_LOAD_COUNT)
-                    self.load_batch_images(batch_start, batch_end)
-            # --- 【修改结束】 ---
-
-            self.current_index = index
-            self._render_current_image()  # 尝试渲染
-            self.update_status()
 
     def show_previous_image(self):
         if self.current_index > 0:
@@ -687,7 +1132,9 @@ class MainWindow(QMainWindow):
                 self.ui.lineEdit_for_curimg.setText(str(self.current_index + 1))
                 self.ui.label_for_imgnum.setText(f"/ {len(self.all_mrc_files)}")
                 if self.current_index < len(self.file_names) and self.file_names[self.current_index]:
-                    self.ui.label_for_curname.setText(f"current image: {self.file_names[self.current_index]}")
+                    current_name = self.file_names[self.current_index]
+                    self.ui.label_for_curname.setText(f"current image: {current_name}")
+                    self.ui.label_for_curname.setToolTip(current_name)
             except Exception:
                 pass
         else:
@@ -698,75 +1145,285 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+    def _dialog_start_dir(self):
+        return self._last_dialog_dir or QDir.homePath()
+
+    def _load_recent_dialog_dirs(self):
+        value = self._browse_settings.value("browse/recentDirs", [])
+        if isinstance(value, str):
+            value = [value]
+        if value is None:
+            value = []
+        recent_dirs = []
+        seen = set()
+        for folder in value:
+            if not folder:
+                continue
+            folder = os.path.normpath(str(folder))
+            key = os.path.normcase(folder)
+            if key in seen:
+                continue
+            seen.add(key)
+            recent_dirs.append(folder)
+            if len(recent_dirs) >= 5:
+                break
+        return recent_dirs
+
+    def _remember_recent_dialog_dir(self, folder):
+        if not folder:
+            return
+        folder = os.path.normpath(str(folder))
+        key = os.path.normcase(folder)
+        next_recent = [folder]
+        for recent in self._recent_dialog_dirs:
+            if os.path.normcase(os.path.normpath(str(recent))) != key:
+                next_recent.append(recent)
+            if len(next_recent) >= 5:
+                break
+        self._recent_dialog_dirs = next_recent[:5]
+        self._browse_settings.setValue("browse/recentDirs", self._recent_dialog_dirs)
+
+    def _remember_dialog_dir(self, selected_path, is_directory=False):
+        if not selected_path:
+            return
+        if is_directory:
+            self._last_dialog_dir = selected_path
+            self._remember_recent_dialog_dir(selected_path)
+            return
+        directory = os.path.dirname(selected_path)
+        if directory:
+            self._last_dialog_dir = directory
+            self._remember_recent_dialog_dir(directory)
+
+    def _select_existing_files(self, title, allowed_suffixes=None):
+        start_dir = self._dialog_start_dir()
+        dialog = NameOnlyFileDialog(
+            self,
+            title,
+            start_dir,
+            mode="files",
+            allowed_suffixes=allowed_suffixes,
+            recent_dirs=self._recent_dialog_dirs,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return []
+        file_paths = dialog.selected_paths()
+        if file_paths:
+            self._remember_dialog_dir(file_paths[0])
+        return file_paths
+
+    def _select_existing_directory(self, title):
+        start_dir = self._dialog_start_dir()
+        dialog = NameOnlyFileDialog(
+            self,
+            title,
+            start_dir,
+            mode="directory",
+            recent_dirs=self._recent_dialog_dirs,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return ""
+        folder_paths = dialog.selected_paths()
+        folder_path = folder_paths[0] if folder_paths else ""
+        if folder_path:
+            self._remember_dialog_dir(folder_path, is_directory=True)
+        return folder_path
+
+    def _select_save_file(self, title, default_suffix=""):
+        start_dir = self._dialog_start_dir()
+        suffixes = (f".{default_suffix.lstrip('.')}",) if default_suffix else None
+        dialog = NameOnlyFileDialog(
+            self,
+            title,
+            start_dir,
+            mode="save",
+            allowed_suffixes=suffixes,
+            default_suffix=default_suffix,
+            recent_dirs=self._recent_dialog_dirs,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return ""
+        file_paths = dialog.selected_paths()
+        file_path = file_paths[0] if file_paths else ""
+        if file_path:
+            if default_suffix and not file_path.endswith(f".{default_suffix}"):
+                file_path += f".{default_suffix}"
+            self._remember_dialog_dir(file_path)
+        return file_path
+
+    # Performance overrides for the legacy full-resolution loader above.
+    def load_mrc_files(self):
+        file_paths = self._select_existing_files(
+            "Select MRC files",
+            allowed_suffixes=(".mrc", ".mrcs", ".mrcs.gz"),
+        )
+        if not file_paths:
+            return
+        try:
+            self._load_generation += 1
+            try:
+                self.thread_pool.clear()
+            except Exception:
+                pass
+
+            self.all_mrc_files = file_paths
+            self.image_list = [None] * len(file_paths)
+            self.file_names = [os.path.basename(path) for path in file_paths]
+            self.image_meta = {}
+            self.loaded_indices.clear()
+            self.loading_indices.clear()
+            self.PREVIEW_CACHE.clear()
+            self.current_index = 0
+            self.pixmap_item = None
+            self._last_rendered_index = None
+            self.scene.clear()
+            self._cache_capacity = self._default_cache_capacity
+
+            mrc_path = os.path.dirname(file_paths[0])
+            try:
+                self.ui.lineEdit_for_mrc_path.setText(mrc_path)
+                self.ui.lineEdit_for_mrc_path.setToolTip(mrc_path)
+            except Exception:
+                pass
+
+            print(
+                f"[Load Strategy] Lazy preview mode: {len(file_paths)} files, "
+                f"cache={self._cache_capacity}, max_edge={self.MAX_PREVIEW_EDGE}"
+            )
+            self.show_image(0)
+            self.update_status()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Unable to load MRC files: {e}")
+
+    def load_batch_images(self, start_idx, end_idx):
+        for i in range(max(0, start_idx), min(end_idx, len(self.all_mrc_files))):
+            if i in self.loaded_indices or i in self.loading_indices:
+                continue
+
+            file_path = self.all_mrc_files[i]
+            cached = self.PREVIEW_CACHE.get(file_path)
+            if cached is not None:
+                self.PREVIEW_CACHE.move_to_end(file_path)
+                pix, meta = cached
+                self._update_lists_with_pixmap(i, pix, file_path, meta)
+                continue
+
+            self.loading_indices.add(i)
+            runnable = MRCFullLoadRunnable(
+                file_path,
+                i,
+                do_adapthist=self.DO_ADAPTHIST,
+                max_preview_edge=self.MAX_PREVIEW_EDGE,
+                generation=self._load_generation,
+            )
+            runnable.signals.frameLoaded.connect(self.on_frame_loaded)
+            self.thread_pool.start(runnable)
+
+    def on_frame_loaded(self, index: int, qimg: QImage, meta: object):
+        self.loading_indices.discard(index)
+        if not isinstance(meta, dict):
+            return
+        if meta.get("generation") != self._load_generation:
+            return
+        if index >= len(self.all_mrc_files) or meta.get("file") != self.all_mrc_files[index]:
+            return
+
+        pix = QPixmap.fromImage(qimg)
+        file_path = self.all_mrc_files[index]
+        self._update_lists_with_pixmap(index, pix, file_path, meta)
+
+        self.PREVIEW_CACHE[file_path] = (pix, meta)
+        self.PREVIEW_CACHE.move_to_end(file_path)
+        self._evict_preview_cache()
+
+        if index == self.current_index:
+            self._render_current_image()
+            self.update_status()
+
+    def _evict_preview_cache(self):
+        while len(self.PREVIEW_CACHE) > self._cache_capacity:
+            evicted_path, cached = self.PREVIEW_CACHE.popitem(last=False)
+            _, meta = cached
+            evicted_index = meta.get("index")
+            if evicted_index == self.current_index:
+                self.PREVIEW_CACHE[evicted_path] = cached
+                self.PREVIEW_CACHE.move_to_end(evicted_path)
+                break
+            if isinstance(evicted_index, int) and evicted_index < len(self.image_list):
+                self.image_list[evicted_index] = None
+                self.image_meta.pop(evicted_index, None)
+                self.loaded_indices.discard(evicted_index)
+
+    def _update_lists_with_pixmap(self, index, pix, file_path, meta=None):
+        while len(self.image_list) <= index:
+            self.image_list.append(None)
+        self.image_list[index] = pix
+
+        while len(self.file_names) <= index:
+            self.file_names.append(None)
+        self.file_names[index] = os.path.basename(file_path)
+
+        if isinstance(meta, dict):
+            self.image_meta[index] = meta
+        self.loaded_indices.add(index)
+
+    def _render_current_image(self):
+        if self.current_index >= len(self.image_list):
+            return
+
+        pix = self.image_list[self.current_index]
+        if pix is None:
+            self.scene.clear()
+            self.pixmap_item = None
+            self._last_rendered_index = None
+            return
+
+        file_path = self.all_mrc_files[self.current_index]
+        if file_path in self.PREVIEW_CACHE:
+            self.PREVIEW_CACHE.move_to_end(file_path)
+
+        is_new_image = self._last_rendered_index != self.current_index
+        if self.pixmap_item is None:
+            self.scene.clear()
+            self.pixmap_item = QGraphicsPixmapItem(pix)
+            self.pixmap_item.setCacheMode(QGraphicsItem.NoCache)
+            self.pixmap_item.setTransformationMode(Qt.FastTransformation)
+            self.pixmap_item.setShapeMode(QGraphicsPixmapItem.BoundingRectShape)
+            self.scene.addItem(self.pixmap_item)
+        else:
+            self.pixmap_item.setPixmap(pix)
+
+        self.scene.setSceneRect(self.pixmap_item.boundingRect())
+        if is_new_image:
+            self.ui.mrcView.resetTransform()
+            self.ui.mrcView.fitInView(self.pixmap_item, Qt.KeepAspectRatio)
+            self._last_rendered_index = self.current_index
+
+        self.draw_boxes_for_current_image()
+
+    def show_image(self, index):
+        if not (0 <= index < len(self.all_mrc_files)):
+            return
+        self.current_index = index
+        start = max(0, index - self.PREFETCH_RADIUS)
+        end = min(len(self.all_mrc_files), index + self.PREFETCH_RADIUS + 1)
+        self.load_batch_images(start, end)
+        self._render_current_image()
+        self.update_status()
+
     def zoom_in(self):
         try:
             # 如果 last_viewport_pos 为空， animate_zoom 会回退到全局鼠标位置或视口中心
-            self.animate_zoom(1.25, anchor=getattr(self, "last_viewport_pos", None), steps=1, step_ms=1)
+            self.animate_zoom(1.25, anchor=getattr(self, "last_viewport_pos", None))
         except Exception:
             self.ui.mrcView.scale(1.2, 1.2)
 
     def zoom_out(self):
         try:
-            self.animate_zoom(0.8, anchor=getattr(self, "last_viewport_pos", None), steps=1, step_ms=1)
+            self.animate_zoom(0.8, anchor=getattr(self, "last_viewport_pos", None))
         except Exception:
             self.ui.mrcView.scale(1 / 1.2, 1 / 1.2)
-
-    # 兼容旧的直接绑定点击（保留）
-    def mouse_press_event(self, event):
-        if self.pixmap_item:
-            try:
-                vp = self._event_to_viewport_point(event)
-                if vp is None:
-                    return
-                scene_pos = self.ui.mrcView.mapToScene(vp)
-                pixmap_pos = self.pixmap_item.mapFromScene(scene_pos)
-                x_pixel = int(pixmap_pos.x())
-                y_pixel = int(pixmap_pos.y())
-                if event.modifiers() == Qt.ControlModifier:
-                    self.remove_box(x_pixel, y_pixel)
-                    self.remove_coordinates(x_pixel, y_pixel)
-                else:
-                    try:
-                        self.ui.label_click_pos.setText(f"x: ({x_pixel}, y: {y_pixel})")
-                    except Exception:
-                        pass
-                    self.save_coordinates(x_pixel, y_pixel)
-            except Exception as e:
-                print("mouse_press_event error:", e)
-
-    def draw_box(self, x, y, verbose=True):
-        if verbose:
-            print(f"Drawing box at ({x}, {y}) with size {self.box_size}")
-        size = self.box_size
-        rect = QGraphicsRectItem(x - size / 2, y - size / 2, size, size)
-        pen = QPen(QColor(255, 0, 0))
-        pen.setWidth(6)
-        rect.setPen(pen)
-        self.scene.addItem(rect)
-
-    def draw_boxes_for_current_image(self):
-        if not hasattr(self, "pixmap_item") or not self.file_names:
-            return
-        items = self.scene.items()
-        for item in items:
-            if isinstance(item, QGraphicsRectItem):
-                self.scene.removeItem(item)
-        current_file = self.file_names[self.current_index]
-        basename = os.path.splitext(current_file)[0]
-        if current_file in self.coordinates:
-            for x, y in self.coordinates[current_file]:
-                self.draw_box(x, y, verbose=False)
-        if hasattr(self, "noise_coordinates") and basename in self.noise_coordinates:
-            try:
-                box_size = int(self.ui.lineEdit_box_size.text())
-            except Exception:
-                box_size = self.box_size
-            pen = QPen(QColor(255, 0, 0))
-            pen.setWidth(2)
-            for x, y in self.noise_coordinates[basename]:
-                rect = QGraphicsRectItem(x - box_size / 2, y - box_size / 2, box_size, box_size)
-                rect.setPen(pen)
-                self.scene.addItem(rect)
 
     def load_coordinates_from_file(self, file_path):
         if not os.path.exists(file_path):
@@ -821,27 +1478,6 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "错误", f"无法保存坐标: {e}")
 
-    def is_coordinate_valid(self, x, y):
-        if not self.pixmap_item:
-            return False
-        pixmap = self.pixmap_item.pixmap()
-        width = pixmap.width()
-        height = pixmap.height()
-        half_size = self.box_size / 2
-        return (half_size <= x < width - half_size and half_size <= y < height - half_size)
-
-    def remove_box(self, x, y):
-        items = self.scene.items()
-        for item in items:
-            if isinstance(item, QGraphicsRectItem):
-                rect = item.rect()
-                center_x = rect.x() + rect.width() / 2
-                center_y = rect.y() + rect.height() / 2
-                distance = (center_x - x) ** 2 + (center_y - y) ** 2
-                if distance < (self.box_size / 2) ** 2:
-                    self.scene.removeItem(item)
-                    break
-
     def sync_particle_coord(self, text):
         """同步颗粒坐标路径到其他相关输入框"""
         # 同步到forward页面
@@ -879,6 +1515,116 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "错误", f"无法更新坐标文件: {e}")
 
+    # Coordinate overrides keep annotations in original MRC pixel space.
+    def _current_image_meta(self):
+        return self.image_meta.get(self.current_index, {})
+
+    def _display_to_source_point(self, x, y):
+        meta = self._current_image_meta()
+        return int(round(x * meta.get("scale_x", 1.0))), int(round(y * meta.get("scale_y", 1.0)))
+
+    def _source_to_display_point(self, x, y):
+        meta = self._current_image_meta()
+        return x / meta.get("scale_x", 1.0), y / meta.get("scale_y", 1.0)
+
+    def _source_box_size(self, size):
+        meta = self._current_image_meta()
+        return size / meta.get("scale_x", 1.0), size / meta.get("scale_y", 1.0)
+
+    def handle_image_click(self, mouse_event):
+        try:
+            if self.pixmap_item is None:
+                return
+            vp_pt = self._event_to_viewport_point(mouse_event)
+            if vp_pt is None:
+                return
+            scene_pos = self.ui.mrcView.mapToScene(vp_pt)
+            pixmap_pos = self.pixmap_item.mapFromScene(scene_pos)
+            x_pixel, y_pixel = self._display_to_source_point(pixmap_pos.x(), pixmap_pos.y())
+            modifiers = QApplication.keyboardModifiers()
+            if modifiers == Qt.ControlModifier:
+                self.remove_box(x_pixel, y_pixel)
+                self.remove_coordinates(x_pixel, y_pixel)
+            else:
+                try:
+                    self.ui.label_click_pos.setText(f"x: ({x_pixel}, y: {y_pixel})")
+                except Exception:
+                    pass
+                self.save_coordinates(x_pixel, y_pixel)
+        except Exception as e:
+            print("handle_image_click error:", e)
+
+    def draw_box(self, x, y, verbose=True):
+        if verbose:
+            print(f"Drawing box at ({x}, {y}) with size {self.box_size}")
+        dx, dy = self._source_to_display_point(x, y)
+        display_w, display_h = self._source_box_size(self.box_size)
+        rect = QGraphicsRectItem(dx - display_w / 2, dy - display_h / 2, display_w, display_h)
+        pen = QPen(QColor(255, 0, 0))
+        pen.setWidth(2)
+        pen.setCosmetic(True)
+        rect.setPen(pen)
+        self.scene.addItem(rect)
+
+    def draw_boxes_for_current_image(self):
+        if self.pixmap_item is None or self.current_index >= len(self.file_names):
+            return
+        for item in list(self.scene.items()):
+            if isinstance(item, QGraphicsRectItem):
+                self.scene.removeItem(item)
+
+        current_file = self.file_names[self.current_index]
+        if not current_file:
+            return
+        basename = os.path.splitext(current_file)[0]
+
+        if current_file in self.coordinates:
+            for x, y in self.coordinates[current_file]:
+                self.draw_box(x, y, verbose=False)
+
+        if hasattr(self, "noise_coordinates") and basename in self.noise_coordinates:
+            try:
+                box_size = int(self.ui.lineEdit_box_size.text())
+            except Exception:
+                box_size = self.box_size
+            pen = QPen(QColor(255, 0, 0))
+            pen.setWidth(2)
+            pen.setCosmetic(True)
+            for x, y in self.noise_coordinates[basename]:
+                dx, dy = self._source_to_display_point(x, y)
+                display_w, display_h = self._source_box_size(box_size)
+                rect = QGraphicsRectItem(dx - display_w / 2, dy - display_h / 2, display_w, display_h)
+                rect.setPen(pen)
+                self.scene.addItem(rect)
+
+    def is_coordinate_valid(self, x, y):
+        meta = self._current_image_meta()
+        source_shape = meta.get("source_shape")
+        if source_shape:
+            height, width = source_shape
+        elif self.pixmap_item:
+            pixmap = self.pixmap_item.pixmap()
+            width = pixmap.width()
+            height = pixmap.height()
+        else:
+            return False
+        half_size = self.box_size / 2
+        return half_size <= x < width - half_size and half_size <= y < height - half_size
+
+    def remove_box(self, x, y):
+        dx, dy = self._source_to_display_point(x, y)
+        display_w, display_h = self._source_box_size(self.box_size)
+        radius_sq = (max(display_w, display_h) / 2) ** 2
+        for item in list(self.scene.items()):
+            if isinstance(item, QGraphicsRectItem):
+                rect = item.rect()
+                center_x = rect.x() + rect.width() / 2
+                center_y = rect.y() + rect.height() / 2
+                distance = (center_x - dx) ** 2 + (center_y - dy) ** 2
+                if distance < radius_sq:
+                    self.scene.removeItem(item)
+                    break
+
     def update_box_size(self):
         try:
             self.box_size = int(self.ui.lineEdit_box_size.text())
@@ -890,10 +1636,6 @@ class MainWindow(QMainWindow):
             self.dragPos = event.globalPosition().toPoint()
         except Exception:
             pass
-
-    def toggle_log(self, checked):
-        self.ui.lineEdit_log.setVisible(checked)
-        self.ui.btn_for_log.setVisible(checked)
 
     def toggle_model(self, checked):
         self.ui.lineEdit_m.setVisible(checked)
@@ -920,18 +1662,18 @@ class MainWindow(QMainWindow):
             self.ui.lineEdit_15.setVisible(False)
 
     def browse_file_folder(self, target_line_edit):
-        folder_path = QFileDialog.getExistingDirectory(self, "Choose folder", "")
+        folder_path = self._select_existing_directory("Choose folder")
         if folder_path:
             target_line_edit.setText(folder_path)
 
     def browse_file(self, target_line_edit):
-        file_paths, _ = QFileDialog.getOpenFileNames(self, "Choose file", "", "All files (*)")
+        file_paths = self._select_existing_files("Choose file")
         if file_paths:
             file_paths_str = "\n".join(file_paths)
             target_line_edit.setText(file_paths_str)
 
     def browse_file_txt(self, target_line_edit):
-        file_path, _ = QFileDialog.getSaveFileName(self, "选择或新建 .txt 文件", "", "Text files (*.txt)")
+        file_path = self._select_save_file("选择或新建 .txt 文件", "txt")
         if file_path:
             if not file_path.endswith(".txt"):
                 file_path += ".txt"
@@ -940,12 +1682,6 @@ class MainWindow(QMainWindow):
                     pass
             target_line_edit.setText(file_path)
             self.load_coordinates_from_file(file_path)
-
-    def update_line_edit_style(self, line_edit):
-        if line_edit.text() == "":
-            line_edit.setStyleSheet("border: 2px solid red;")
-        else:
-            line_edit.setStyleSheet("")
 
     def sync_text_gpu_id(self):
         sender = self.sender()
@@ -1055,7 +1791,9 @@ class MainWindow(QMainWindow):
                 "-op", out_path,
                 "--beta", beta,
                 "--total_steps", total_steps,
-                "--start", start
+                "--start", start,
+                "--particle_coord_origin",
+                "bottom-left" if self.checkBox_flip_particle_y.isChecked() else "top-left",
             ]
             print(f"执行命令: {' '.join(command)}")
             self.script_runner = ScriptRunner(command)
@@ -1118,6 +1856,13 @@ class MainWindow(QMainWindow):
             else:
                 base_path = self.ui.lineEdit_10.text()
                 model_path = os.path.join(base_path, "best_model.pth")
+                if not os.path.isfile(model_path):
+                    QMessageBox.warning(
+                        self,
+                        "模型缺失",
+                        "未找到稳定的 best_model.pth。请勾选自定义模型并选择一个具体 epoch 的 .pth 文件。",
+                    )
+                    return
             out_path = self.ui.lineEdit_14.text()
             log_path = self.ui.lineEdit_log_2.text()
             input_fields = {
@@ -1244,11 +1989,22 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "错误", f"执行失败:\n{str(e)}")
 
+    def resizeEvent(self, event):
+        # Let Qt update all layouts first.  The page stack is layout-managed,
+        # so doing this before moving the transparent resize grips prevents
+        # stale regions while the right edge is being dragged.
+        super().resizeEvent(event)
+        try:
+            UIFunctions.resize_grips(self)
+        except Exception:
+            pass
+
     # -------------------- Replace/extend closeEvent to wait for threadpool tasks briefly --------------------
     def closeEvent(self, event):
         # wait for background loading tasks to finish briefly to avoid abrupt termination
         try:
-            self.thread_pool.waitForDone(2000)  # wait up to 2s; adjust if needed
+            self.thread_pool.clear()
+            self.thread_pool.waitForDone(300)
         except Exception:
             pass
         try:
@@ -1280,7 +2036,7 @@ class ScriptRunner(QThread):
             
             self.process = subprocess.Popen(
                 self.command, 
-                stdout=subprocess.PIPE, 
+                stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE, 
                 text=True,
                 # startupinfo=startupinfo 
@@ -1333,6 +2089,6 @@ class ScriptRunner(QThread):
                 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    app.setWindowIcon(QIcon("icon.ico"))
+    app.setWindowIcon(QIcon(":/images/images/PyDracula.png"))
     window = MainWindow()
     sys.exit(app.exec())
