@@ -75,6 +75,7 @@ class ForwardOriginOptionTests(unittest.TestCase):
             tooltip = help_icon.toolTip()
             for phrase in ("csparc2star.py", "--inverty", "RELION", "invert.star", "IMOD", "CryoDDM"):
                 self.assertIn(phrase, tooltip)
+            self.assertFalse(any("　" <= ch <= "鿿" or "＀" <= ch <= "￯" for ch in tooltip))
             self.assertEqual(checkbox.toolTip(), tooltip)
         finally:
             window.close()

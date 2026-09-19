@@ -40,25 +40,27 @@ os.environ["QT_FONT_DPI"] = "96"  # FIX Problem for High DPI and Scale above 100
 # 全局 widgets 引用（由 Ui_MainWindow 初始化）
 widgets = None
 
-# Forward 页 "Y origin at bottom-left" 选项旁 (?) 图标的说明
+# Forward 页 "Y origin at bottom-left" 选项旁 (?) 图标的说明（界面文字用英文）
 PARTICLE_ORIGIN_HELP = (
-    "<b>Y origin at bottom-left（Y 轴翻转）</b><br>"
-    "勾选后，forward 会把每个颗粒坐标的 y 换成 <i>H − y</i>（H = micrograph 高度）再裁剪；"
-    "不勾选时 y 直接当作 MRC 图像的行号。<br><br>"
-    "<b>✔ 需要勾选</b>"
+    "<b>Y origin at bottom-left (flip Y)</b><br>"
+    "When checked, forward replaces each particle's y with <i>H &minus; y</i> (H = micrograph height) "
+    "before cropping. When unchecked, y is used directly as the MRC row index.<br><br>"
+    "<b>&#10004; Check it for</b>"
     "<ul style='margin-top:2px'>"
-    "<li>cryoSPARC 用 pyem <code>csparc2star.py</code> 直接导出、没有加 <code>--inverty</code> 的 STAR"
-    "（例如 cs2star 页面的中间文件 particles_relion.star、cleaned_particles_relion.star）</li>"
+    "<li>STAR files exported from cryoSPARC by pyem <code>csparc2star.py</code> <b>without</b> "
+    "<code>--inverty</code>, e.g. the cs2star tab's intermediate particles_relion.star / "
+    "cleaned_particles_relion.star</li>"
     "</ul>"
-    "<b>✘ 不要勾选（默认）</b>"
+    "<b>&#10008; Leave it unchecked (default) for</b>"
     "<ul style='margin-top:2px'>"
-    "<li>CryoDDM 自己点选保存的坐标</li>"
-    "<li>RELION 的 STAR（ManualPick / AutoPick / Extract）</li>"
-    "<li>CryoDDM cs2star 页面生成的 <b>invert.star</b>（y_value 填 micrograph 高度）</li>"
-    "<li>pyem 加了 <code>--inverty</code> 导出的 STAR</li>"
-    "<li>IMOD <code>model2point</code> 导出的坐标（先整理成 “文件名 x y”）</li>"
+    "<li>Coordinates picked in CryoDDM</li>"
+    "<li>RELION STAR files (ManualPick / AutoPick / Extract)</li>"
+    "<li><b>invert.star</b> from the CryoDDM cs2star tab (y_value = micrograph height)</li>"
+    "<li>STAR files exported by pyem with <code>--inverty</code></li>"
+    "<li>IMOD <code>model2point</code> coordinates (reformat them as &quot;filename x y&quot;)</li>"
     "</ul>"
-    "拿不准时：先用少量颗粒跑一次 forward，检查 <code>s1/particles.mrcs</code> 里颗粒是否位于图块中心。"
+    "Not sure? Run forward on a few particles first and check that the particles are centred "
+    "in <code>s1/particles.mrcs</code>."
 )
 
 
