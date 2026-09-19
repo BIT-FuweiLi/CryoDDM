@@ -28,7 +28,7 @@
 
 ## 🛠️ 系统要求
 
-*   **操作系统**：Linux (推荐 Ubuntu/CentOS) 或 Windows 10/11。
+*   **操作系统**：Linux（推荐 Ubuntu/CentOS）。
 *   **显卡 (GPU)**：NVIDIA 显卡，需支持 **CUDA** (训练和推理所必需；建议显存 8GB 以上)。
 *   **Python**：建议版本 3.10。
 *   **环境管理**：强烈建议安装 Anaconda 或 Miniconda。
@@ -45,13 +45,6 @@
     ```
 
 2.  **安装 V2.0 正式版：**
-
-    Windows 用户请先安装 CUDA 版 PyTorch（PyPI 上的 Windows 版 torch 只支持 CPU），Linux 可跳过这一行：
-    ```bash
-    pip install torch==2.4.0 torchvision==0.19.0 --index-url https://download.pytorch.org/whl/cu121
-    ```
-
-    然后安装 CryoDDM：
     ```bash
     pip install "git+https://github.com/BIT-FuweiLi/CryoDDM.git@v2.0"
     ```
@@ -127,7 +120,7 @@ csparc2star.py --help
 *   **目标**：恢复原始显微图像中的高保真结构信息，促进后续更精确的 3D 分类和重构。
 
 ### 第五步：格式转换 (cs2star 页面)
-*   **功能**：将 CryoSPARC 导出的颗粒数据 (`.cs`) 转换为 RELION 兼容格式 (`.star`) 的实用工具。该页面通过 bash 调用脚本，需要在 Linux 下使用。
+*   **功能**：将 CryoSPARC 导出的颗粒数据 (`.cs`) 转换为 RELION 兼容格式 (`.star`) 的实用工具。
 *   **设置**：
     *   `project_path`：cryoSPARC 作业目录，目录名为 `J<编号>`（如 `.../CS-xxx/J102`）。
     *   `output_path`：输出文件夹。
@@ -174,7 +167,7 @@ Unlike conventional denoising methods, CryoDDM introduces **Residual Structural 
 
 ## 🛠️ System Requirements 
 
-*   **OS**: Linux (Ubuntu/CentOS recommended) or Windows 10/11.
+*   **OS**: Linux (Ubuntu/CentOS recommended).
 *   **GPU**: NVIDIA GPU with **CUDA** support (Essential for training and inference; 8GB+ VRAM recommended).
 *   **Python**: Version 3.10.
 *   **Environment**: Anaconda or Miniconda is strongly recommended.
@@ -191,13 +184,6 @@ The recommended path is installing the V2.0 release (tag `v2.0`) from GitHub. Tr
     ```
 
 2.  **Install the V2.0 release:**
-
-    On Windows, install the CUDA build of PyTorch first (the Windows torch wheel on PyPI is CPU-only); skip this line on Linux:
-    ```bash
-    pip install torch==2.4.0 torchvision==0.19.0 --index-url https://download.pytorch.org/whl/cu121
-    ```
-
-    Then install CryoDDM:
     ```bash
     pip install "git+https://github.com/BIT-FuweiLi/CryoDDM.git@v2.0"
     ```
@@ -273,7 +259,7 @@ csparc2star.py --help
 *   **Goal**: Restore high-fidelity structural information from raw micrographs to facilitate accurate downstream 3D classification and reconstruction.
 
 ### Step 5: Format Conversion (cs2star Tab)
-*   **Function**: A utility tool to convert CryoSPARC exported particle data (`.cs`) into RELION-compatible format (`.star`). The tab runs a bash script and must be used on Linux.
+*   **Function**: A utility tool to convert CryoSPARC exported particle data (`.cs`) into RELION-compatible format (`.star`).
 *   **Settings**: 
     *   `project_path`: the cryoSPARC job directory, named `J<number>` (e.g. `.../CS-xxx/J102`).
     *   `output_path`: output folder.
